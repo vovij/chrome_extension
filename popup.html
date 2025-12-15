@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 320px;
+      min-height: 400px;
+      margin: 0;
+      padding: 16px;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #e5e7eb;
+      margin-bottom: 16px;
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .tab {
+      flex: 1;
+      padding: 8px;
+      border: none;
+      background: #f3f4f6;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    .tab.active {
+      background: #3b82f6;
+      color: white;
+    }
+    .content {
+      display: none;
+    }
+    .content.active {
+      display: block;
+    }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      margin-top: 8px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .btn-primary {
+      background: #3b82f6;
+      color: white;
+    }
+    .btn-secondary {
+      background: #f3f4f6;
+      color: #374151;
+    }
+    .list-item {
+      padding: 12px;
+      margin-bottom: 8px;
+      background: #f9fafb;
+      border-radius: 4px;
+    }
+    .page-info {
+      padding: 12px;
+      background: #f3f4f6;
+      border-radius: 4px;
+      margin-bottom: 12px;
+    }
+    .page-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .page-url {
+      font-size: 12px;
+      color: #6b7280;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h3 style="margin: 0;">SeenIt</h3>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="current">Current</button>
+    <button class="tab" data-tab="list">List</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </div>
+
+  <!-- Current Page Tab -->
+  <div id="current" class="content active">
+    <div id="page-info" class="page-info">
+      <div class="page-title">Loading...</div>
+      <div class="page-url"></div>
+    </div>
+    <button class="btn btn-primary" id="mark-seen">Mark as Seen</button>
+    <button class="btn btn-secondary" id="mark-hide">Mark & Hide Similar</button>
+  </div>
+
+  <!-- List Tab -->
+  <div id="list" class="content">
+    <div id="seen-list"></div>
+  </div>
+
+  <!-- Settings Tab -->
+  <div id="settings" class="content">
+    <label style="display: flex; align-items: center; gap: 8px;">
+      <input type="checkbox" id="auto-close">
+      Auto-close seen pages
+    </label>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
