@@ -1,3 +1,9 @@
+// Get the list of tracked sites from background.js
+const TRACKED_SITES = [
+  'bbc.co.uk',
+  'reuters.com'
+];
+
 // Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -10,6 +16,11 @@ document.querySelectorAll('.tab').forEach(tab => {
     // Update content
     document.querySelectorAll('.content').forEach(c => c.classList.remove('active'));
     document.getElementById(targetTab).classList.add('active');
+    
+    // If switching to settings, load stats
+    if (targetTab === 'settings') {
+      loadStats();
+    }
   });
 });
 
@@ -19,59 +30,23 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   if (currentTab) {
     document.querySelector('.page-title').textContent = currentTab.title;
     document.querySelector('.page-url').textContent = currentTab.url;
+    
+    // Check if current page is being tracked
+    if (isTrackedSite(currentTab.url)) {
+      document.getElementById('tracking-status').style.display = 'block';
+    }
   }
 });
 
-// Mark as seen
-document.getElementById('mark-seen').addEventListener('click', () => {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tab = tabs[0];
-    
-    // Get existing seen items
-    chrome.storage.local.get(['seenItems'], (result) => {
-      const seenItems = result.seenItems || [];
-      
-      // Add new item
-      seenItems.push({
-        id: Date.now(),
-        url: tab.url,
-        title: tab.title,
-        timestamp: new Date().toISOString(),
-        hideSimilar: false
-      });
-      
-      // Save
-      chrome.storage.local.set({ seenItems }, () => {
-        alert('Page marked as seen!');
-        loadSeenList();
-      });
-    });
-  });
-});
-
-// Mark and hide similar
-document.getElementById('mark-hide').addEventListener('click', () => {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tab = tabs[0];
-    
-    chrome.storage.local.get(['seenItems'], (result) => {
-      const seenItems = result.seenItems || [];
-      
-      seenItems.push({
-        id: Date.now(),
-        url: tab.url,
-        title: tab.title,
-        timestamp: new Date().toISOString(),
-        hideSimilar: true
-      });
-      
-      chrome.storage.local.set({ seenItems }, () => {
-        alert('Page marked! Similar pages will be auto-closed.');
-        loadSeenList();
-      });
-    });
-  });
-});
+// Check if URL matches any tracked site
+function isTrackedSite(url) {
+  try {
+    const hostname = new URL(url).hostname.replace('www.', '');
+    return TRACKED_SITES.some(site => hostname.includes(site));
+  } catch {
+    return false;
+  }
+}
 
 // Load seen list
 function loadSeenList() {
@@ -84,25 +59,68 @@ function loadSeenList() {
       return;
     }
     
-    listContainer.innerHTML = seenItems.map(item => `
+    // Sort by timestamp (newest first)
+    const sortedItems = [...seenItems].sort((a, b) => 
+      new Date(b.timestamp) - new Date(a.timestamp)
+    );
+    
+    listContainer.innerHTML = sortedItems.map(item => `
       <div class="list-item">
         <div style="font-weight: 500; margin-bottom: 4px;">${item.title}</div>
-        <div style="font-size: 12px; color: #6b7280;">${new Date(item.timestamp).toLocaleDateString()}</div>
-        ${item.hideSimilar ? '<div style="font-size: 11px; color: #f59e0b; margin-top: 4px;">🔒 Auto-close enabled</div>' : ''}
+        <div style="font-size: 12px; color: #6b7280;">
+          ${item.domain} • ${new Date(item.timestamp).toLocaleDateString()}
+        </div>
       </div>
     `).join('');
   });
 }
 
-// Auto-close setting
-document.getElementById('auto-close').addEventListener('change', (e) => {
-  chrome.storage.local.set({ autoClose: e.target.checked });
-});
+// Load tracked sites in settings
+function loadTrackedSites() {
+  const container = document.getElementById('tracked-sites');
+  container.innerHTML = TRACKED_SITES.map(site => `
+    <div class="tracked-site">
+      ✓ ${site}
+    </div>
+  `).join('');
+}
 
-// Load auto-close setting
-chrome.storage.local.get(['autoClose'], (result) => {
-  document.getElementById('auto-close').checked = result.autoClose || false;
+// Load statistics
+function loadStats() {
+  chrome.storage.local.get(['seenItems'], (result) => {
+    const seenItems = result.seenItems || [];
+    
+    // Total count
+    document.getElementById('total-tracked').textContent = seenItems.length;
+    
+    // Today's count
+    const today = new Date().toDateString();
+    const todayCount = seenItems.filter(item => 
+      new Date(item.timestamp).toDateString() === today
+    ).length;
+    document.getElementById('today-tracked').textContent = todayCount;
+  });
+}
+
+// Clear all history
+document.getElementById('clear-all').addEventListener('click', () => {
+  if (confirm('Clear all tracking history?')) {
+    chrome.storage.local.set({ seenItems: [] }, () => {
+      loadSeenList();
+      loadStats();
+    });
+  }
 });
 
 // Load list on init
 loadSeenList();
+loadTrackedSites();
+loadStats();
+
+// Refresh list every 3 seconds
+setInterval(() => {
+  const listTab = document.getElementById('list');
+  if (listTab.classList.contains('active')) {
+    loadSeenList();
+  }
+}, 3000);
