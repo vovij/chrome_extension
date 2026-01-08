@@ -1,8 +1,11 @@
 // Get the list of tracked sites from background.js
-const TRACKED_SITES = [
-  'bbc.co.uk',
-  'reuters.com'
-];
+let TRACKED_SITES = [];
+
+// Get tracked sites from background on load
+chrome.runtime.sendMessage({ action: 'getTrackedSites' }, (response) => {
+  TRACKED_SITES = response.sites;
+  loadTrackedSites();
+});
 
 // Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
@@ -114,7 +117,6 @@ document.getElementById('clear-all').addEventListener('click', () => {
 
 // Load list on init
 loadSeenList();
-loadTrackedSites();
 loadStats();
 
 // Refresh list every 3 seconds

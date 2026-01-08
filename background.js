@@ -49,3 +49,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
   }
 });
+
+// Make TRACKED_SITES available to popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'getTrackedSites') {
+    sendResponse({ sites: TRACKED_SITES });
+  }
+});
