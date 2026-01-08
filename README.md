@@ -1,172 +1,123 @@
-# SeenIt - Minimal Barebone Extension
+# SeenIt - Auto News Tracker
 
-**Total: ~170 lines of code** - No frameworks, no auth, just pure HTML/CSS/JS.
+Automatically track news articles you read. Minimal setup, 2 folders.
 
-## What's Included
-
-- ✅ 3 tabs: Current Page, List, Settings
-- ✅ Mark page as seen
-- ✅ Mark page & hide similar (auto-close)
-- ✅ View seen list
-- ✅ Auto-close toggle
-- ✅ Chrome local storage (no backend needed)
-- ✅ Background service worker for auto-close
-
-## File Structure
+## Structure
 
 ```
-minimal-extension/
-├── manifest.json       # Extension config
-├── popup.html         # Main UI (~80 lines)
-├── popup.js           # Logic (~70 lines)
-└── background.js      # Auto-close (~15 lines)
+seenit/
+├── extension/              # Chrome Extension (Frontend)
+│   ├── icons/             # Extension icons
+│   ├── manifest.json      # Extension config
+│   ├── popup.html         # UI
+│   ├── popup.js           # UI logic
+│   └── background.js      # Auto-tracking logic
+│
+└── backend/               # Node.js API (Backend)
+    ├── server.js          # Express server (all logic here)
+    ├── package.json       # Dependencies
+    └── .env               # Config
 ```
 
-## Setup (2 minutes)
+## Setup (5 minutes)
 
-1. **Add Icons** (required):
-   - Create or download 3 PNG files: `icon16.png`, `icon48.png`, `icon128.png`
-   - Put them in the `minimal-extension/` folder
+### 1. Backend
 
-2. **Load in Chrome**:
-   - Open `chrome://extensions/`
-   - Enable "Developer mode"
-   - Click "Load unpacked"
-   - Select the `minimal-extension/` folder
+```bash
+cd backend
+npm install
+npm start
+```
 
-3. **Done!** Click the extension icon to use it.
+Server runs on `http://localhost:3000`
+
+### 2. Extension
+
+1. Open Chrome and go to `chrome://extensions/`
+2. Enable **"Developer mode"** (toggle in top right)
+3. Click **"Load unpacked"**
+4. Select the `extension/` folder
+5. Done! ✅
+
+### 3. Add Icons (Required)
+
+The extension needs icons or it will error. Quick fix:
+
+**Option A: Use Emoji Icons (2 minutes)**
+1. Go to [favicon.io/emoji-favicons/](https://favicon.io/emoji-favicons/)
+2. Search "eye" or "bookmark"
+3. Download ZIP
+4. Extract and rename files to:
+   - `icon16.png`
+   - `icon32.png`
+   - `icon48.png`
+   - `icon128.png`
+5. Put them in `extension/icons/` folder
+
+**Option B: Create Placeholders**
+```bash
+cd extension/icons
+# Create simple blue squares (requires ImageMagick)
+convert -size 16x16 xc:#3b82f6 icon16.png
+convert -size 32x32 xc:#3b82f6 icon32.png
+convert -size 48x48 xc:#3b82f6 icon48.png
+convert -size 128x128 xc:#3b82f6 icon128.png
+```
 
 ## How It Works
 
-### Data Storage
-Uses `chrome.storage.local` - no database needed:
-```javascript
-{
-  seenItems: [
-    {
-      id: timestamp,
-      url: "https://example.com",
-      title: "Page Title",
-      timestamp: "2025-12-15T...",
-      hideSimilar: true/false
-    }
-  ],
-  autoClose: true/false
-}
-```
+1. Visit BBC, Reuters, Guardian, NYT, or CNN article
+2. Extension auto-tracks it in the background
+3. Data saved locally (Chrome storage) + backend API
+4. Click extension icon to see your history
 
-### Features
+## Tracked Sites
 
-**Current Page Tab**:
-- Shows current page info
-- "Mark as Seen" button - saves to storage
-- "Mark & Hide Similar" - saves + enables auto-close for this URL
+Currently tracking:
+- `bbc.co.uk`
+- `reuters.com`
+- `theguardian.com`
+- `nytimes.com`
+- `cnn.com`
 
-**List Tab**:
-- Displays all seen pages
-- Shows date and auto-close status
+To add more: Edit `TRACKED_SITES` in `extension/background.js`
 
-**Settings Tab**:
-- Toggle auto-close feature on/off
+## What's Stored
 
-**Background Worker**:
-- Monitors tab updates
-- Auto-closes tabs if URL matches a "hide similar" entry
+**Backend** (in-memory for now):
+- Article URL, title, timestamp
+- User ID (auto-generated)
+- Domain
 
-## Extending This
+**Extension** (Chrome local storage):
+- Same data as backend
+- Works offline
 
-Add these features by editing the files:
+## API Endpoints
 
-### 1. Delete from List
-In `popup.js`, add delete buttons:
-```javascript
-// In loadSeenList(), add to HTML:
-<button onclick="deleteItem(${item.id})">Delete</button>
+- `POST /api/articles` - Save article
+- `GET /api/articles/:userId` - Get user's articles
+- `POST /api/similarity/check` - Check if similar exists
+- `DELETE /api/articles/:id` - Delete article
 
-// Add function:
-function deleteItem(id) {
-  chrome.storage.local.get(['seenItems'], (result) => {
-    const items = result.seenItems.filter(item => item.id !== id);
-    chrome.storage.local.set({ seenItems: items }, loadSeenList);
-  });
-}
-```
+## Future Enhancements
 
-### 2. Search
-Add an input in `popup.html`:
-```html
-<input type="text" id="search" placeholder="Search...">
-```
+- [ ] Add database (PostgreSQL/MongoDB)
+- [ ] NLP-based similarity detection (embeddings)
+- [ ] User authentication
+- [ ] Cloud sync between devices
+- [ ] Article content extraction
 
-Filter in `popup.js`:
-```javascript
-document.getElementById('search').addEventListener('input', (e) => {
-  const query = e.target.value.toLowerCase();
-  // Filter seenItems by title/url containing query
-});
-```
+## Troubleshooting
 
-### 3. Tags/Categories
-Add to data structure:
-```javascript
-{
-  ...item,
-  tags: ['work', 'research']
-}
-```
+**Extension error "ERR_FILE_NOT_FOUND"?**
+- Add icons to `extension/icons/` folder (see step 3 above)
+- Reload extension: `chrome://extensions/` → click refresh icon
 
-### 4. Export Data
-```javascript
-function exportData() {
-  chrome.storage.local.get(['seenItems'], (result) => {
-    const json = JSON.stringify(result.seenItems, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    chrome.downloads.download({ url, filename: 'seenit-export.json' });
-  });
-}
-```
+**Backend not connecting?**
+- Make sure backend is running: `npm start` in `backend/` folder
+- Extension works offline, just won't sync to backend
 
-### 5. Add Backend (Supabase/Firebase)
-Replace `chrome.storage.local` calls with API calls:
-```javascript
-// Instead of:
-chrome.storage.local.set({ seenItems }, callback);
-
-// Use:
-await fetch('https://your-api.com/seen', {
-  method: 'POST',
-  body: JSON.stringify(item)
-});
-```
-
-## Total Code Size
-
-- `popup.html`: ~80 lines (structure + inline styles)
-- `popup.js`: ~70 lines (all logic)
-- `background.js`: ~15 lines (auto-close)
-- `manifest.json`: ~25 lines (config)
-
-**Total: ~190 lines**
-
-## Quick Icon Solution
-
-Use emoji icons from [favicon.io](https://favicon.io/emoji-favicons/):
-1. Search "eye" emoji
-2. Download
-3. Rename files to `icon16.png`, `icon48.png`, `icon128.png`
-4. Copy to extension folder
-
-Or create temporary placeholders:
-```bash
-# macOS/Linux with ImageMagick
-convert -size 16x16 xc:blue icon16.png
-convert -size 48x48 xc:blue icon48.png
-convert -size 128x128 xc:blue icon128.png
-```
-
-## That's It!
-
-This is the absolute minimum viable Chrome extension for content tracking. No dependencies, no build step, no auth - just load and use.
-
-Start here, then add whatever features you need!
+**Extension not tracking?**
+- Check you're on a tracked site (BBC, Reuters, etc.)
+- Open Console: Right-click extension icon → Inspect popup → Console tab
