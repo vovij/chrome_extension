@@ -1,0 +1,22 @@
+name: seenit-zs
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scikit-learn
+  - tqdm
+  - orjson
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - pip
+  - pip:
+      - sentence-transformers
+      - transformers
+      - ipykernel
