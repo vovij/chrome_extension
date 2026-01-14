@@ -11,10 +11,10 @@ from sentence_transformers import SentenceTransformer
 import torch
 
 # =========================
-# 可配置参数（直接修改这里）
+# Configurable Parameters (Modify here directly)
 # =========================
 CONFIG = {
-    # 数据路径（使用你前一步生成的 WCEP 派生文件）
+    # Data paths (use the WCEP derived files generated in the previous step)
     "articles_train": "out_wcep_posttrain/articles.train.jsonl",
     "articles_val":   "out_wcep_posttrain/articles.val.jsonl",
     "articles_test":  "out_wcep_posttrain/articles.test.jsonl",
@@ -22,28 +22,28 @@ CONFIG = {
     "pairs_val":      "out_wcep_posttrain/pairs.val.jsonl",
     "pairs_test":     "out_wcep_posttrain/pairs.test.jsonl",
 
-    # 输出目录
+    # Output directory
     "outdir": "out_posttrain_minilm",
 
-    # 随机种子与设备
+    # Random seed and device
     "seed": 2026,
-    "device": None,  # "cuda" / "cpu" / None(自动)
+    "device": None,  # "cuda" / "cpu" / None(auto)
 
-    # 模型与推理
+    # Model and inference
     "model_name": "sentence-transformers/all-MiniLM-L6-v2",
     "batch_size": 64,
-    "text_strategy": "title+text",  # "title+text" 或 "title"
+    "text_strategy": "title+text",  # "title+text" or "title"
     "max_text_len": 2000,
 
-    # 目标精度（用于阈值选择）
+    # Target precision (for threshold selection)
     "target_precision": 0.95,
 
-    # 是否保存中间带 E 的 pairs
+    # Whether to save intermediate pairs with E
     "save_pairs_with_E": True,
 }
 
 # =========================
-# 工具函数
+# Utility Functions
 # =========================
 def set_seed(seed: int = 2026):
     random.seed(seed)
@@ -67,7 +67,7 @@ def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / ((np.linalg.norm(a) + 1e-9) * (np.linalg.norm(b) + 1e-9)))
 
 # =========================
-# 模型与嵌入
+# Model and Embeddings
 # =========================
 def load_model(model_name: str, device: str = None):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -80,13 +80,13 @@ def batch_encode_texts(model: SentenceTransformer, texts: List[str], batch_size:
         texts,
         batch_size=batch_size,
         convert_to_numpy=True,
-        normalize_embeddings=True,  # 已做 L2 归一化
+        normalize_embeddings=True,  # L2 normalization already done
         show_progress_bar=show_progress
     )
     return vecs.astype(np.float32)
 
 # =========================
-# 数据加载
+# Data Loading
 # =========================
 def load_articles(articles_path: str) -> Dict[str, dict]:
     d = {}
@@ -107,7 +107,7 @@ def load_pairs(pairs_path: str) -> pd.DataFrame:
     return df
 
 # =========================
-# 计算 E (余弦相似)
+# Calculate E (Cosine Similarity)
 # =========================
 def build_id_embeddings(articles: Dict[str, dict],
                         model: SentenceTransformer,
@@ -147,10 +147,10 @@ def fill_pairs_with_E(df_pairs: pd.DataFrame, id2emb: Dict[str, np.ndarray]) -> 
     return df_pairs.dropna(subset=["E"])
 
 # =========================
-# 阈值/权重学习
+# Threshold/Weight Learning
 # =========================
 def pick_threshold_for_precision(y_true, scores, target_precision=0.95):
-    # 在 0..1 之间扫描阈值，达到目标精度时选择召回最高的阈值
+    # Scan threshold between 0..1, select threshold with highest recall when target precision is reached
     cand = np.linspace(0.0, 1.0, 1001)
     best = {"tau": 0.5, "precision": 0.0, "recall": 0.0, "f1": 0.0}
     for t in cand:
@@ -159,7 +159,7 @@ def pick_threshold_for_precision(y_true, scores, target_precision=0.95):
         if p + 1e-9 >= target_precision:
             if r > best["recall"]:
                 best = {"tau": float(t), "precision": float(p), "recall": float(r), "f1": float(f1)}
-    # 若达不到目标精度，则回退到最高 F1
+    # If target precision is not reached, fallback to highest F1
     if best["precision"] < target_precision:
         f1best, best_t = 0.0, 0.5
         for t in cand:
@@ -195,17 +195,17 @@ def eval_on(df: pd.DataFrame, feature_cols: List[str], clf: LogisticRegression, 
     return {"precision": float(p), "recall": float(r), "f1": float(f1), "auc": float(auc)}
 
 # =========================
-# 主流程
+# Main Process
 # =========================
 def main():
     C = CONFIG
     set_seed(C["seed"])
     Path(C["outdir"]).mkdir(parents=True, exist_ok=True)
 
-    # 1) 加载模型
+    # 1) Load model
     model, device = load_model(C["model_name"], device=C["device"])
 
-    # 2) 读数据
+    # 2) Read data
     arts_tr = load_articles(C["articles_train"])
     arts_va = load_articles(C["articles_val"])
     arts_te = load_articles(C["articles_test"])
@@ -213,17 +213,17 @@ def main():
     pairs_va = load_pairs(C["pairs_val"])
     pairs_te = load_pairs(C["pairs_test"])
 
-    # 3) 计算嵌入（按 split 单独计算，避免泄漏）
+    # 3) Calculate embeddings (calculate separately by split to avoid leakage)
     emb_tr = build_id_embeddings(arts_tr, model, C["text_strategy"], C["max_text_len"], C["batch_size"])
     emb_va = build_id_embeddings(arts_va, model, C["text_strategy"], C["max_text_len"], C["batch_size"])
     emb_te = build_id_embeddings(arts_te, model, C["text_strategy"], C["max_text_len"], C["batch_size"])
 
-    # 4) 回填 E
+    # 4) Backfill E
     pairs_tr = fill_pairs_with_E(pairs_tr, emb_tr)
     pairs_va = fill_pairs_with_E(pairs_va, emb_va)
     pairs_te = fill_pairs_with_E(pairs_te, emb_te)
 
-    # 5) 基线（仅 E 阈值）
+    # 5) Baseline (E threshold only)
     base_val = pick_threshold_for_precision(pairs_va["label"].values, pairs_va["E"].values, C["target_precision"])
     base_test_pred = (pairs_te["E"].values >= base_val["tau"]).astype(int)
     bp, br, bf1, _ = precision_recall_fscore_support(pairs_te["label"].values, base_test_pred, average="binary", zero_division=0)
@@ -233,12 +233,12 @@ def main():
         "test_metrics": {"precision": float(bp), "recall": float(br), "f1": float(bf1)}
     }
 
-    # 6) 组合特征（逻辑回归）
+    # 6) Combined features (Logistic Regression)
     feature_cols = [c for c in ["U","T","Sh","E","domain_same","time_diff_days"] if c in pairs_tr.columns]
     clf, best, _ = train_logreg(pairs_tr, pairs_va, feature_cols, C["target_precision"])
     logreg_test = eval_on(pairs_te, feature_cols, clf, best["tau"])
 
-    # 7) 导出配置
+    # 7) Export config
     cfg = {
         "model_name": C["model_name"],
         "text_strategy": C["text_strategy"],

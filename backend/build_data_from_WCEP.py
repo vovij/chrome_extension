@@ -3,17 +3,17 @@ from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from collections import defaultdict
 from datetime import datetime, timezone
 
-# ========== 可复现随机 ==========
+# ========== Reproducible Randomness ==========
 def set_seed(seed: int):
     random.seed(seed)
 
-# ========== 读取 WCEP ==========
+# ========== Read WCEP ==========
 def read_jsonl_gz(path):
     with gzip.open(path, "rt", encoding="utf-8") as f:
         for line in f:
             yield json.loads(line)
 
-# ========== 文本与特征 ==========
+# ========== Text and Features ==========
 def tokenize_title(t: str):
     if not t: return []
     t = t.lower()
@@ -35,7 +35,7 @@ def jaccard(a_tokens, b_tokens):
     return len(A & B) / max(1, len(A | B))
 
 def hash32(s: str):
-    # FNV-1a 32-bit (稳定、可复现)
+    # FNV-1a 32-bit (stable, reproducible)
     h = 2166136261
     for c in s.encode("utf-8", errors="ignore"):
         h ^= c
@@ -48,8 +48,8 @@ def hash64(s: str):
     return (a << 32) | b
 
 def simhash64(text: str):
-    # 简单 TF 权重 simhash（64 位）
-    toks = tokenize_title(text)  # 对正文也可用更完整分词，这里沿用简化版
+    # Simple TF weighted simhash (64-bit)
+    toks = tokenize_title(text)  # More complete tokenization can be used for body text; simplified version used here
     if not toks:
         return 0
     weights = defaultdict(int)
@@ -81,13 +81,13 @@ def normalize_url(url: str):
     try:
         u = urlparse(url)
         host = u.hostname or ""
-        # 去掉 m. 前缀
+        # Remove m. prefix
         if host.startswith("m."):
             host = host[2:]
-        # 去掉常见 tracking 参数
+        # Remove common tracking parameters
         qs = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
               if not (k.startswith("utm_") or k in {"gclid", "fbclid"})]
-        # 去掉末尾斜杠与 AMP 尾缀
+        # Remove trailing slash and AMP suffix
         path = (u.path or "").rstrip("/")
         if path.endswith("/amp"):
             path = path[:-4]
@@ -103,7 +103,7 @@ def extract_domain(url: str):
         return ""
 
 def parse_time_iso(t: str):
-    # WCEP 常为 ISO 格式；尽量稳健解析
+    # WCEP is usually in ISO format; try to parse robustly
     if not t:
         return None
     try:
@@ -117,10 +117,10 @@ def days_diff(t1, t2):
     if not t1 or not t2: return None
     return abs((t1 - t2).days)
 
-# ========== 采样与生成 ==========
+# ========== Sampling and Generation ==========
 def build_articles(split_path, max_events=None, max_articles_per_event=5):
     """
-    返回 articles 列表与 by_cluster 索引
+    Returns articles list and by_cluster index
     """
     articles = []
     by_cluster = defaultdict(list)
@@ -131,26 +131,26 @@ def build_articles(split_path, max_events=None, max_articles_per_event=5):
         if not cid or not arts: 
             continue
 
-        # 先按时间排序，保证确定性
+        # Sort by time first to ensure determinism
         arts_sorted = sorted(
             arts,
             key=lambda a: a.get("time") or ""
         )
 
-        # 截断每个事件的文章数，控制规模
+        # Truncate the number of articles per event to control scale
         arts_take = arts_sorted[:max_articles_per_event]
 
         for a in arts_take:
             aid = a.get("id")
             title = a.get("title") or ""
             url = a.get("url") or ""
-            # 文本优先取 content/text（具体字段名以你数据为准）
+            # Text prefers content/text (specific field name depends on your data)
             text = a.get("content") or a.get("text") or ""
             tiso = parse_time_iso(a.get("time") or "")
             nurl = normalize_url(url)
             dom = extract_domain(nurl)
-            # 计算 SimHash（对正文也可以更细致处理；此处简化）
-            sh = simhash64(title + " " + text[:2000])  # 截断避免过长
+            # Calculate SimHash (body text can be processed more carefully; simplified here)
+            sh = simhash64(title + " " + text[:2000])  # Truncate to avoid being too long
 
             item = {
                 "id": aid,
@@ -170,7 +170,7 @@ def build_articles(split_path, max_events=None, max_articles_per_event=5):
         if max_events is not None and len(by_cluster) >= max_events:
             break
 
-    # 为确定性，整体按 (cluster_id, id) 排序
+    # Sort globally by (cluster_id, id) for determinism
     articles.sort(key=lambda r: (r["cluster_id"], r["id"] or ""))
     return articles, by_cluster
 
@@ -180,9 +180,9 @@ def sample_positive_pairs(by_cluster, max_pos_pairs_per_cluster=10, seed=42):
     for cid, arts in by_cluster.items():
         if len(arts) < 2:
             continue
-        # 所有两两组合
+        # All pairwise combinations
         comb = list(itertools.combinations(arts, 2))
-        # 打乱后截断
+        # Shuffle and truncate
         random.shuffle(comb)
         comb = comb[:max_pos_pairs_per_cluster]
         for a, b in comb:
@@ -191,12 +191,12 @@ def sample_positive_pairs(by_cluster, max_pos_pairs_per_cluster=10, seed=42):
 
 def sample_negative_pairs(articles, by_cluster, negatives_per_positive=1, seed=42):
     """
-    负样本：跨簇采样。尽量做“困难负样本”：同日或同域名优先；
-    简化实现：对每个正样本需求量给出预算后，总体随机从跨簇对里抽取，
-    并加上一些“同日/同域名”的加权优先（这里用两阶段筛选近似实现）。
+    Negative samples: Cross-cluster sampling. Try to make "hard negatives": same day or same domain preferred;
+    Simplified implementation: After giving a budget for each positive sample requirement, randomly sample from cross-cluster pairs overall,
+    and add some weighted priority for "same day/same domain" (approximated here using two-stage filtering).
     """
     set_seed(seed)
-    # 建索引：按日期、按域名聚类
+    # Build index: cluster by date, by domain
     date_buckets = defaultdict(list)
     domain_buckets = defaultdict(list)
 
@@ -205,58 +205,58 @@ def sample_negative_pairs(articles, by_cluster, negatives_per_positive=1, seed=4
         if day: date_buckets[day].append(a)
         if a["source_domain"]: domain_buckets[a["source_domain"]].append(a)
 
-    # 全部文章列表
+    # All articles list
     all_arts = articles
 
     def pick_hard_negative(a):
-        # 优先同日不同簇
+        # Prefer same day different cluster
         day = (a["time_iso"] or "")[:10]
         cand = [x for x in date_buckets.get(day, []) if x["cluster_id"] != a["cluster_id"]]
         if not cand:
-            # 次优先同域名不同簇
+            # Next prefer same domain different cluster
             cand = [x for x in domain_buckets.get(a["source_domain"], []) if x["cluster_id"] != a["cluster_id"]]
         if not cand:
-            # 退化为任意跨簇
-            # 为保证确定性，先过滤再随机
+            # Degrade to arbitrary cross-cluster
+            # Filter then randomize to ensure determinism
             cand = [x for x in all_arts if x["cluster_id"] != a["cluster_id"]]
         return random.choice(cand) if cand else None
 
     return pick_hard_negative
 
 def build_pairs(articles, by_cluster, max_pos_pairs_per_cluster=10, negatives_per_positive=1, seed=42):
-    # 正样本
+    # Positive samples
     pos = sample_positive_pairs(by_cluster, max_pos_pairs_per_cluster, seed)
-    # 负样本“挑选器”
+    # Negative sample "picker"
     pick_neg_for = sample_negative_pairs(articles, by_cluster, negatives_per_positive, seed)
 
     pairs = []
-    # 构造正样本对
+    # Construct positive pairs
     for a, b, lab in pos:
         pairs.append((a, b, lab))
-        # 为每个正样本配若干负样本
+        # Assign several negative samples for each positive sample
         for _ in range(negatives_per_positive):
-            # 对 a 找负样本
+            # Find negative sample for a
             n = pick_neg_for(a)
             if n:
                 pairs.append((a, n, 0))
 
-    # 为确定性排序（不改变分布，只改变输出顺序）
+    # Sort for determinism (does not change distribution, only output order)
     pairs.sort(key=lambda t: (t[0]["cluster_id"], t[0]["id"] or "", t[1]["id"] or "", -t[2]))
     return pairs
 
 def pair_features(a, b):
-    # U: 规范 URL 是否相等
+    # U: Whether canonical URLs are equal
     U = 1 if (a["canonical_url"] == b["canonical_url"] and a["canonical_url"]) else 0
-    # T: 标题 Jaccard
+    # T: Title Jaccard
     T = jaccard(a["title_tokens"], b["title_tokens"])
-    # Sh: SimHash 相似度
+    # Sh: SimHash similarity
     dH = hamming64(a["simhash64"], b["simhash64"])
     Sh = 1.0 - (dH / 64.0)
-    # 时间差（天）
+    # Time difference (days)
     t1 = parse_time_iso(a["time_iso"]) if isinstance(a["time_iso"], str) else None
     t2 = parse_time_iso(b["time_iso"]) if isinstance(b["time_iso"], str) else None
     dt = days_diff(t1, t2)
-    # 是否同域
+    # Whether same domain
     domain_same = 1 if a["source_domain"] == b["source_domain"] and a["source_domain"] else 0
     return U, T, Sh, (dt if dt is not None else -1), domain_same
 
@@ -280,11 +280,11 @@ def generate_split(split_name, split_path, out_dir, *,
     )
     print(f"[{split_name}] clusters={len(by_cluster)}, articles={len(articles)}")
 
-    # 写出 articles
+    # Write articles
     art_out = [dict(a, **{"split": split_name}) for a in articles]
     write_jsonl(f"{out_dir}/articles.{split_name}.jsonl", art_out)
 
-    # 构造 pairs
+    # Construct pairs
     pairs_raw = build_pairs(
         articles, by_cluster,
         max_pos_pairs_per_cluster=max_pos_pairs_per_cluster,
@@ -304,20 +304,20 @@ def generate_split(split_name, split_path, out_dir, *,
     write_jsonl(f"{out_dir}/pairs.{split_name}.jsonl", pairs_out)
     print(f"[{split_name}] pairs={len(pairs_out)} written.")
 
-# ========== 示例调用 ==========
+# ========== Example Call ==========
 if __name__ == "__main__":
-    # 按需修改路径
+    # Modify paths as needed
     BASE = "WCEP"
     OUT = "out_wcep_posttrain"
     SEED = 2026
 
-    # 控制规模：每个 split 最多取 N 个事件，每事件最多取 K 篇文章，每簇生成 P 个正样本，每个正样本配 R 个负样本
+    # Control scale: take at most N events per split, at most K articles per event, generate P positive samples per cluster, assign R negative samples per positive sample
     LIMITS = dict(
         seed=SEED,
-        max_events=200,              # 限定事件数量（可调小以快速出结果）
-        max_articles_per_event=5,    # 控制每事件采样文章数
-        max_pos_pairs_per_cluster=8, # 每簇最多正样本对
-        negatives_per_positive=1     # 每个正样本配 1 个负样本
+        max_events=200,              # Limit number of events (can be reduced for quick results)
+        max_articles_per_event=5,    # Control number of sampled articles per event
+        max_pos_pairs_per_cluster=8, # Max positive pairs per cluster
+        negatives_per_positive=1     # 1 negative sample per positive sample
     )
 
     generate_split("train", f"{BASE}/train.jsonl.gz", OUT, **LIMITS)
