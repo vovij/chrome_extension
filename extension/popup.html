@@ -5,7 +5,7 @@
   <style>
     body {
       width: 320px;
-      min-height: 400px;
+      min-height: 420px;
       margin: 0;
       padding: 16px;
       font-family: system-ui, -apple-system, sans-serif;
@@ -79,14 +79,6 @@
       color: #6b7280;
       word-break: break-all;
     }
-    .tracked-site {
-      padding: 10px 12px;
-      margin-bottom: 6px;
-      background: #f9fafb;
-      border-radius: 4px;
-      border-left: 3px solid #10b981;
-      font-size: 14px;
-    }
     .settings-section {
       margin-bottom: 20px;
     }
@@ -96,6 +88,10 @@
       color: #6b7280;
       text-transform: uppercase;
       letter-spacing: 0.5px;
+    }
+    a:visited {
+      color: #9ca3af;
+      text-decoration: line-through;
     }
   </style>
 </head>
@@ -116,9 +112,15 @@
       <div class="page-title">Loading...</div>
       <div class="page-url"></div>
     </div>
-    <div id="tracking-status" style="padding: 8px; margin-bottom: 8px; background: #fef3c7; border-radius: 4px; font-size: 13px; display: none;">
+
+    <div id="tracking-status"
+      style="padding: 8px; margin-bottom: 12px; background: #fef3c7; border-radius: 4px; font-size: 13px; display: none;">
       ✓ This page is being auto-tracked
     </div>
+
+    <div id="current-matches"></div>
+
+    <button class="btn btn-secondary" id="refresh-current">Refresh</button>
   </div>
 
   <!-- List Tab -->
@@ -128,11 +130,7 @@
 
   <!-- Settings Tab -->
   <div id="settings" class="content">
-    <div class="settings-section">
-      <h4>Tracked Websites</h4>
-      <div id="tracked-sites"></div>
-    </div>
-    
+
     <div class="settings-section">
       <h4>Statistics</h4>
       <div style="display: flex; gap: 8px;">
