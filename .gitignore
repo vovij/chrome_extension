@@ -38,6 +38,11 @@ venv/
 *.sqlite
 *.sqlite3
 
+# posttrain files
+backend/out_posttrain_minilm/
+backend/out_wcep_posttrain/
+WCEP/
+
 # ML artifacts
 *.pt
 *.pth
