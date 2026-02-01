@@ -55,3 +55,6 @@ WCEP/
 out_posttrain_minilm/
 models/
 checkpoints/
+backend/WCEP/
+backend/out_wcep_posttrain/
+backend/out_posttrain_minilm/
