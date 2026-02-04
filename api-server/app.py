@@ -1,18 +1,110 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from models import ArticleInput, ArticleResponse, SimilarArticle
 from engine import EmbeddingEngine
 from storage import save_article, load_all
 from extract_content import extract_article_content
 from pydantic import BaseModel
 import time
-
-# NEW
 import os, json
 from datetime import datetime, timezone
 import math
 
+# Import auth
+from auth import (
+    init_auth_db, 
+    UserCreate, 
+    UserLogin, 
+    Token, 
+    User,
+    create_access_token,
+    get_user_by_email,
+    create_user,
+    verify_password,
+    get_current_user,
+    ACCESS_TOKEN_EXPIRE_MINUTES
+)
+from datetime import timedelta
+
 app = FastAPI(title="SeenIt API")
 engine = EmbeddingEngine()
+
+# Initialize auth database
+init_auth_db()
+
+# ==================== AUTH ENDPOINTS ====================
+
+@app.post("/api/register", response_model=dict)
+async def register(user: UserCreate):
+    """Register a new user"""
+    # Validate password length
+    if len(user.password) < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 6 characters"
+        )
+    
+    # Create user
+    new_user = create_user(user.email, user.password)
+    
+    return {
+        "success": True,
+        "message": "User registered successfully",
+        "user": {
+            "id": new_user["id"],
+            "email": new_user["email"]
+        }
+    }
+
+@app.post("/api/login", response_model=dict)
+async def login(user: UserLogin):
+    """Login and get access token"""
+    # Find user
+    db_user = get_user_by_email(user.email)
+    
+    if not db_user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
+    
+    # Verify password
+    if not verify_password(user.password, db_user["hashed_password"]):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": db_user["email"]}, 
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "success": True,
+        "message": "Login successful",
+        "user": {
+            "id": db_user["id"],
+            "email": db_user["email"]
+        },
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
+
+@app.get("/api/health")
+async def health():
+    """Health check endpoint"""
+    return {
+        "success": True,
+        "message": "Server is running",
+        "storage": "sqlite"
+    }
+
+@app.get("/api/me", response_model=User)
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Get current user info (protected route example)"""
+    return current_user
 
 # NEW: URL extraction model
 class URLRequest(BaseModel):
@@ -146,12 +238,15 @@ async def process_article(article: ArticleInput):
 
         for title, url, sim in zip(titles, urls, sims):
             E = float(sim)
-            
-            if url == article.url:
-                continue 
 
             # Compute light runtime features
+            # domain_same: 1 if same domain else 0
+            # NOTE: storage doesn't currently return domains/timestamps; if you add them later,
+            # you can make this more accurate.
+            # For now, we only have current domain; for old ones, we can't know -> use 0
             domain_same = 0.0
+
+            # time_diff_days: same issue (we don't have stored timestamps here) -> 0
             time_diff_days = 0.0
 
             # decision: logreg (if usable) else tau_embed_only
@@ -236,10 +331,6 @@ async def extract_and_process_url(request: URLRequest):
 
             for title, url, sim in zip(titles, urls, sims):
                 E = float(sim)
-                 
-                if url == article.url:
-                    continue  
-                    
                 domain_same = 0.0
                 time_diff_days = 0.0
 
@@ -262,12 +353,7 @@ async def extract_and_process_url(request: URLRequest):
         return {
             "similar_found": len(matches) > 0,
             "cluster_id": cluster_id,
-            "matches": matches[:5],
-            "extracted_article": { 
-                "title": article.title,
-                "domain": article.domain,
-                "timestamp": article.timestamp
-            }
+            "matches": matches[:5]
         }
         
     except HTTPException:

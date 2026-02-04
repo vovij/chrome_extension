@@ -1,5 +1,5 @@
 // SeenIt Popup — auth + CURRENT page + LIST of clusters (similar articles)
-const API_BASE_URL = 'http://localhost:3000/api';
+const API_BASE_URL = 'http://localhost:8000/api';
 
 const TRACKED_SITES = [
   "bbc.co.uk",
@@ -134,7 +134,10 @@ async function handleLogin() {
     if (data.success) {
       // Save user to storage
       currentUser = data.user;
-      chrome.storage.local.set({ user: data.user }, () => {
+      chrome.storage.local.set({ 
+        user: data.user,
+        token: data.access_token  // NEW: save token for future use
+      }, () => {
         showAuthSuccess('Login successful!');
         setTimeout(() => {
           showMainContent();
