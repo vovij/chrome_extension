@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 
 class ArticleInput(BaseModel):
@@ -20,4 +20,4 @@ class ArticleResponse(BaseModel):
     similar_found: bool
     cluster_id: str
     matches: List[SimilarArticle]
-
+    extracted_article: Optional[Dict[str, Any]] = None 

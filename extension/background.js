@@ -97,21 +97,32 @@ function upsertClusters(article, result) {
   chrome.storage.local.get(["clusters"], (res) => {
     const clusters = res.clusters || {};
 
-    const clusterId = result?.cluster_id || article.url; // fallback
-    const cluster =
-      clusters[clusterId] || {
-        representativeTitle: article.title,
-        articles: [],
-        lastVisited: article.timestamp,
-      };
+    const clusterId = result?.cluster_id || article.url;
+    const cluster = clusters[clusterId] || {
+      representativeTitle: article.title,
+      articles: [],
+      lastVisited: article.timestamp,
+    };
 
-    // keep representative title fresh
+    // Keep representative title fresh
     if (!cluster.representativeTitle) cluster.representativeTitle = article.title;
 
-    // helper to avoid duplicates
-    const add = (title, url, similarity) => {
+    // Helper to avoid duplicates
+    const add = (title, url, similarity = 0) => {
       if (!url) return;
-      if (!cluster.articles.some((a) => a.url === url)) {
+      
+
+      const existingIndex = cluster.articles.findIndex((a) => a.url === url);
+      
+      if (existingIndex >= 0) {
+        if (similarity > (cluster.articles[existingIndex].similarity || 0)) {
+          cluster.articles[existingIndex] = { 
+            title: title || cluster.articles[existingIndex].title, 
+            url, 
+            similarity 
+          };
+        }
+      } else {
         cluster.articles.push({ title: title || "Untitled", url, similarity });
       }
     };
@@ -119,7 +130,7 @@ function upsertClusters(article, result) {
     cluster.currentUrl = article.url;
     cluster.currentTitle = article.title;
 
-    // include matches returned by API
+    // Include ONLY matches returned by API (не текущую статью)
     (result?.matches || []).forEach((m) => {
       add(m.title, m.url, m.similarity);
     });
@@ -131,7 +142,11 @@ function upsertClusters(article, result) {
       if (chrome.runtime.lastError) {
         console.error("SeenIt: storage error:", chrome.runtime.lastError);
       } else {
-        console.log("SeenIt: clusters saved", { clusterId, count: cluster.articles.length });
+        console.log("SeenIt: clusters saved", { 
+          clusterId, 
+          count: cluster.articles.length,
+          articlesInCluster: cluster.articles.map(a => a.title)
+        });
       }
     });
   });
@@ -145,6 +160,16 @@ async function processTab(tabId, tab) {
   try {
     console.log("SeenIt: processing tab", tab.url);
     
+    const result = await chrome.storage.local.get(['recentlyProcessed']);
+    const recentlyProcessed = result.recentlyProcessed || {};
+    const now = Date.now();
+    
+
+    if (recentlyProcessed[tab.url] && (now - recentlyProcessed[tab.url]) < 5 * 60 * 1000) {
+      console.log("SeenIt: article already processed recently, skipping", tab.url);
+      return;
+    }
+    
     // Method 1: Try local extraction first (faster)
     const extracted = await extractArticle(tabId);
     
@@ -154,7 +179,7 @@ async function processTab(tabId, tab) {
       return;
     }
 
-    let result = null;
+    let apiResult = null;
 
     // Check if local extraction worked well
     if (extracted.title && extracted.content && extracted.content.length > 200) {
@@ -169,33 +194,55 @@ async function processTab(tabId, tab) {
         timestamp: new Date().toISOString(),
       };
 
-      result = await sendArticle(article);
+      apiResult = await sendArticle(article);
       
     } else {
       // Fallback: Use server-side extraction
       console.log("SeenIt: local extraction failed, using server-side extraction");
       console.log("Local extraction result:", extracted);
       
-      result = await sendURL(tab.url);
+      apiResult = await sendURL(tab.url);
     }
 
-    // Save for popup and show banner
-    if (result) {
-      // Create article object for storage (may be from API response or local)
-      const article = {
-        title: result.cluster_id ? "Article processed via URL" : extracted.title,
-        url: tab.url,
-        domain: new URL(tab.url).hostname.replace("www.", ""),
-        timestamp: new Date().toISOString(),
-      };
+    recentlyProcessed[tab.url] = now;
+    
+    Object.keys(recentlyProcessed).forEach(url => {
+      if (now - recentlyProcessed[url] > 60 * 60 * 1000) {
+        delete recentlyProcessed[url];
+      }
+    });
+    
+    chrome.storage.local.set({ recentlyProcessed });
 
-      upsertClusters(article, result);
+    // Save for popup and show banner
+    if (apiResult) {
+      let articleForStorage;
+      
+      if (extracted.title && extracted.content?.length > 200) {
+        articleForStorage = {
+          title: extracted.title,
+          url: tab.url,
+          domain: new URL(tab.url).hostname.replace("www.", ""),
+          timestamp: new Date().toISOString(),
+        };
+      } else {
+        //
+        const extractedInfo = apiResult.extracted_article;
+        articleForStorage = {
+          title: extractedInfo?.title || `Article from ${new URL(tab.url).hostname}`,
+          url: tab.url,
+          domain: extractedInfo?.domain || new URL(tab.url).hostname.replace("www.", ""),
+          timestamp: extractedInfo?.timestamp || new Date().toISOString(),
+        };
+      }
+
+      upsertClusters(articleForStorage, apiResult);
 
       // Show banner if similar articles found
-      if (result?.similar_found) {
+      if (apiResult?.similar_found) {
         chrome.tabs.sendMessage(tabId, {
           type: "SHOW_SEENIT_BANNER",
-          matches: result.matches || [],
+          matches: apiResult.matches || [],
         }).catch(() => {
           // if no content script on this page, ignore
         });
@@ -203,9 +250,10 @@ async function processTab(tabId, tab) {
 
       console.log("SeenIt: processed OK", { 
         url: tab.url, 
-        cluster: result?.cluster_id,
+        cluster: apiResult?.cluster_id,
         method: extracted.content?.length > 200 ? "local" : "server",
-        matches: result?.matches?.length || 0
+        matches: apiResult?.matches?.length || 0,
+        title: articleForStorage.title
       });
     }
 
@@ -215,8 +263,8 @@ async function processTab(tabId, tab) {
     // Show error notification (optional)
     chrome.notifications?.create({
       type: 'basic',
-      iconUrl: 'icon.png',  // if you have an icon
-      title: 'SeenIt Error',
+      iconUrl: 'icon.png',
+      title: 'SeenIt Error', 
       message: 'Failed to process article'
     }).catch(() => {});
   }

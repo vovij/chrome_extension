@@ -146,15 +146,12 @@ async def process_article(article: ArticleInput):
 
         for title, url, sim in zip(titles, urls, sims):
             E = float(sim)
+            
+            if url == article.url:
+                continue 
 
             # Compute light runtime features
-            # domain_same: 1 if same domain else 0
-            # NOTE: storage doesn't currently return domains/timestamps; if you add them later,
-            # you can make this more accurate.
-            # For now, we only have current domain; for old ones, we can't know -> use 0
             domain_same = 0.0
-
-            # time_diff_days: same issue (we don't have stored timestamps here) -> 0
             time_diff_days = 0.0
 
             # decision: logreg (if usable) else tau_embed_only
@@ -239,6 +236,10 @@ async def extract_and_process_url(request: URLRequest):
 
             for title, url, sim in zip(titles, urls, sims):
                 E = float(sim)
+                 
+                if url == article.url:
+                    continue  
+                    
                 domain_same = 0.0
                 time_diff_days = 0.0
 
@@ -261,7 +262,12 @@ async def extract_and_process_url(request: URLRequest):
         return {
             "similar_found": len(matches) > 0,
             "cluster_id": cluster_id,
-            "matches": matches[:5]
+            "matches": matches[:5],
+            "extracted_article": { 
+                "title": article.title,
+                "domain": article.domain,
+                "timestamp": article.timestamp
+            }
         }
         
     except HTTPException:

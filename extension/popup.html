@@ -93,6 +93,101 @@
       color: #9ca3af;
       text-decoration: line-through;
     }
+    .auth-container {
+      display: none;
+    }
+    .auth-container.active {
+      display: block;
+    }
+    .main-content {
+      display: none;
+    }
+    .main-content.active {
+      display: block;
+    }
+    .auth-form {
+      margin-top: 20px;
+    }
+    .form-group {
+      margin-bottom: 12px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      color: #374151;
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
+    .form-group input {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #d1d5db;
+      border-radius: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    .form-group input:focus {
+      outline: none;
+      border-color: #3b82f6;
+    }
+    .auth-toggle {
+      text-align: center;
+      margin-top: 12px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .auth-toggle a {
+      color: #3b82f6;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+    .auth-toggle a:hover {
+      color: #2563eb;
+    }
+    .error-message {
+      padding: 8px;
+      background: #fee2e2;
+      color: #dc2626;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 12px;
+      display: none;
+    }
+    .error-message.show {
+      display: block;
+    }
+    .success-message {
+      padding: 8px;
+      background: #d1fae5;
+      color: #065f46;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-bottom: 12px;
+      display: none;
+    }
+    .success-message.show {
+      display: block;
+    }
+    .user-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .logout-btn {
+      padding: 4px 8px;
+      font-size: 11px;
+      background: #fee2e2;
+      color: #dc2626;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .logout-btn:hover {
+      background: #fecaca;
+    }
   </style>
 </head>
 <body>
@@ -100,52 +195,100 @@
     <h3 style="margin: 0;">SeenIt</h3>
   </div>
 
-  <div class="tabs">
-    <button class="tab active" data-tab="current">Current</button>
-    <button class="tab" data-tab="list">List</button>
-    <button class="tab" data-tab="settings">Settings</button>
-  </div>
-
-  <!-- Current Page Tab -->
-  <div id="current" class="content active">
-    <div id="page-info" class="page-info">
-      <div class="page-title">Loading...</div>
-      <div class="page-url"></div>
-    </div>
-
-    <div id="tracking-status"
-      style="padding: 8px; margin-bottom: 12px; background: #fef3c7; border-radius: 4px; font-size: 13px; display: none;">
-      ✓ This page is being auto-tracked
-    </div>
-
-    <div id="current-matches"></div>
-
-    <button class="btn btn-secondary" id="refresh-current">Refresh</button>
-  </div>
-
-  <!-- List Tab -->
-  <div id="list" class="content">
-    <div id="seen-list"></div>
-  </div>
-
-  <!-- Settings Tab -->
-  <div id="settings" class="content">
-
-    <div class="settings-section">
-      <h4>Statistics</h4>
-      <div style="display: flex; gap: 8px;">
-        <div style="flex: 1; padding: 12px; background: #f3f4f6; border-radius: 4px; text-align: center;">
-          <div style="font-size: 20px; font-weight: bold; color: #3b82f6;" id="total-tracked">0</div>
-          <div style="font-size: 11px; color: #6b7280; margin-top: 4px;">Total</div>
-        </div>
-        <div style="flex: 1; padding: 12px; background: #f3f4f6; border-radius: 4px; text-align: center;">
-          <div style="font-size: 20px; font-weight: bold; color: #10b981;" id="today-tracked">0</div>
-          <div style="font-size: 11px; color: #6b7280; margin-top: 4px;">Today</div>
-        </div>
+  <!-- Authentication Container -->
+  <div id="auth-container" class="auth-container active">
+    <div id="auth-error" class="error-message"></div>
+    <div id="auth-success" class="success-message"></div>
+    
+    <!-- Login Form -->
+    <div id="login-form" class="auth-form">
+      <h4 style="margin: 0 0 16px 0;">Login</h4>
+      <div class="form-group">
+        <label for="login-email">Email</label>
+        <input type="email" id="login-email" placeholder="your@email.com" required>
+      </div>
+      <div class="form-group">
+        <label for="login-password">Password</label>
+        <input type="password" id="login-password" placeholder="••••••••" required>
+      </div>
+      <button class="btn btn-primary" id="login-btn">Login</button>
+      <div class="auth-toggle">
+        Don't have an account? <a id="show-register">Register</a>
       </div>
     </div>
 
-    <button class="btn btn-secondary" id="clear-all">Clear All History</button>
+    <!-- Register Form -->
+    <div id="register-form" class="auth-form" style="display: none;">
+      <h4 style="margin: 0 0 16px 0;">Register</h4>
+      <div class="form-group">
+        <label for="register-email">Email</label>
+        <input type="email" id="register-email" placeholder="your@email.com" required>
+      </div>
+      <div class="form-group">
+        <label for="register-password">Password</label>
+        <input type="password" id="register-password" placeholder="••••••••" required>
+      </div>
+      <button class="btn btn-primary" id="register-btn">Register</button>
+      <div class="auth-toggle">
+        Already have an account? <a id="show-login">Login</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content (shown when authenticated) -->
+  <div id="main-content" class="main-content">
+    <div class="user-info">
+      <span>Logged in as: <strong id="user-email"></strong></span>
+      <button class="logout-btn" id="logout-btn">Logout</button>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="current">Current</button>
+      <button class="tab" data-tab="list">List</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </div>
+
+    <!-- Current Page Tab -->
+    <div id="current" class="content active">
+      <div id="page-info" class="page-info">
+        <div class="page-title">Loading...</div>
+        <div class="page-url"></div>
+      </div>
+      <div id="tracking-status" style="padding: 8px; margin-bottom: 12px; background: #fef3c7; border-radius: 4px; font-size: 13px; display: none;">
+        ✓ This page is being auto-tracked
+      </div>
+      <div id="current-matches"></div>
+      <button class="btn btn-secondary" id="refresh-current">Refresh</button>
+    </div>
+
+    <!-- List Tab -->
+    <div id="list" class="content">
+      <div id="seen-list"></div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div id="settings" class="content">
+      <div class="settings-section">
+        <h4>Tracked Websites</h4>
+        <div id="tracked-sites"></div>
+      </div>
+      
+      <div class="settings-section">
+        <h4>Statistics</h4>
+        <div style="display: flex; gap: 8px;">
+          <div style="flex: 1; padding: 12px; background: #f3f4f6; border-radius: 4px; text-align: center;">
+            <div style="font-size: 20px; font-weight: bold; color: #3b82f6;" id="total-tracked">0</div>
+            <div style="font-size: 11px; color: #6b7280; margin-top: 4px;">Total</div>
+          </div>
+          <div style="flex: 1; padding: 12px; background: #f3f4f6; border-radius: 4px; text-align: center;">
+            <div style="font-size: 20px; font-weight: bold; color: #10b981;" id="today-tracked">0</div>
+            <div style="font-size: 11px; color: #6b7280; margin-top: 4px;">Today</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-secondary" id="clear-all">Clear All History</button>
+    </div>
   </div>
 
   <script src="popup.js"></script>

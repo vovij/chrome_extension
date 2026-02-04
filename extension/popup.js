@@ -1,5 +1,5 @@
-// SeenIt Popup — shows CURRENT page + LIST of clusters
-// Reads from chrome.storage.local.clusters
+// SeenIt Popup — auth + CURRENT page + LIST of clusters (similar articles)
+const API_BASE_URL = 'http://localhost:3000/api';
 
 const TRACKED_SITES = [
   "bbc.co.uk",
@@ -9,15 +9,230 @@ const TRACKED_SITES = [
   "theguardian.com",
 ];
 
-document.addEventListener("DOMContentLoaded", () => {
-  setupTabs();
+// Authentication state
+let currentUser = null;
+let refreshIntervalId = null;
 
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+  checkAuthStatus();
+  setupAuthHandlers();
+});
+
+// Check if user is authenticated
+function checkAuthStatus() {
+  chrome.storage.local.get(['user'], (result) => {
+    if (result.user && result.user.email) {
+      currentUser = result.user;
+      showMainContent();
+    } else {
+      showAuthContainer();
+    }
+  });
+}
+
+// Show authentication container
+function showAuthContainer() {
+  document.getElementById('auth-container').classList.add('active');
+  document.getElementById('main-content').classList.remove('active');
+}
+
+// Show main content
+function showMainContent() {
+  document.getElementById('auth-container').classList.remove('active');
+  document.getElementById('main-content').classList.add('active');
+  
+  if (currentUser) {
+    document.getElementById('user-email').textContent = currentUser.email;
+  }
+  
+  // Initialize main app functionality
+  initializeApp();
+}
+
+// Initialize main app (clusters + similar articles)
+function initializeApp() {
+  setupTabs();
   loadCurrent();
   loadClusters();
   loadStats();
+  document.getElementById('refresh-current')?.addEventListener('click', loadCurrent);
 
-  document.getElementById("refresh-current")?.addEventListener("click", loadCurrent);
-});
+  const clearAllBtn = document.getElementById('clear-all');
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener('click', () => {
+      if (!confirm('Clear all tracked articles?')) return;
+      chrome.storage.local.set({ clusters: {} }, () => {
+        loadCurrent();
+        loadClusters();
+        loadStats();
+      });
+    });
+  }
+
+  if (refreshIntervalId) clearInterval(refreshIntervalId);
+  refreshIntervalId = setInterval(() => {
+    const listTab = document.getElementById('list');
+    if (listTab && listTab.classList.contains('active')) {
+      loadClusters();
+    }
+  }, 3000);
+}
+
+// Setup authentication event handlers
+function setupAuthHandlers() {
+  // Login form
+  document.getElementById('login-btn').addEventListener('click', handleLogin);
+  document.getElementById('login-password').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handleLogin();
+  });
+  
+  // Register form
+  document.getElementById('register-btn').addEventListener('click', handleRegister);
+  document.getElementById('register-password').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handleRegister();
+  });
+  
+  // Toggle between login and register
+  document.getElementById('show-register').addEventListener('click', () => {
+    document.getElementById('login-form').style.display = 'none';
+    document.getElementById('register-form').style.display = 'block';
+    clearAuthMessages();
+  });
+  
+  document.getElementById('show-login').addEventListener('click', () => {
+    document.getElementById('register-form').style.display = 'none';
+    document.getElementById('login-form').style.display = 'block';
+    clearAuthMessages();
+  });
+  
+  // Logout
+  document.getElementById('logout-btn').addEventListener('click', handleLogout);
+}
+
+// Handle login
+async function handleLogin() {
+  const email = document.getElementById('login-email').value;
+  const password = document.getElementById('login-password').value;
+  
+  if (!email || !password) {
+    showAuthError('Please enter both email and password');
+    return;
+  }
+  
+  try {
+    const response = await fetch(`${API_BASE_URL}/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email, password }),
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      // Save user to storage
+      currentUser = data.user;
+      chrome.storage.local.set({ user: data.user }, () => {
+        showAuthSuccess('Login successful!');
+        setTimeout(() => {
+          showMainContent();
+          clearAuthMessages();
+        }, 1000);
+      });
+    } else {
+      showAuthError(data.message || 'Login failed');
+    }
+  } catch (error) {
+    console.error('Login error:', error);
+    showAuthError('Failed to connect to server. Make sure the backend is running.');
+  }
+}
+
+// Handle register
+async function handleRegister() {
+  const email = document.getElementById('register-email').value;
+  const password = document.getElementById('register-password').value;
+  
+  if (!email || !password) {
+    showAuthError('Please enter both email and password');
+    return;
+  }
+  
+  if (password.length < 6) {
+    showAuthError('Password must be at least 6 characters');
+    return;
+  }
+  
+  try {
+    const response = await fetch(`${API_BASE_URL}/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email, password }),
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      showAuthSuccess('Registration successful! Please login.');
+      // Switch to login form
+      setTimeout(() => {
+        document.getElementById('register-form').style.display = 'none';
+        document.getElementById('login-form').style.display = 'block';
+        document.getElementById('login-email').value = email;
+        clearAuthMessages();
+      }, 1500);
+    } else {
+      showAuthError(data.message || 'Registration failed');
+    }
+  } catch (error) {
+    console.error('Registration error:', error);
+    showAuthError('Failed to connect to server. Make sure the backend is running.');
+  }
+}
+
+// Handle logout
+function handleLogout() {
+  chrome.storage.local.remove(['user'], () => {
+    currentUser = null;
+    if (refreshIntervalId) {
+      clearInterval(refreshIntervalId);
+      refreshIntervalId = null;
+    }
+    showAuthContainer();
+    // Clear form fields
+    document.getElementById('login-email').value = '';
+    document.getElementById('login-password').value = '';
+    document.getElementById('register-email').value = '';
+    document.getElementById('register-password').value = '';
+    clearAuthMessages();
+  });
+}
+
+// Show error message
+function showAuthError(message) {
+  const errorEl = document.getElementById('auth-error');
+  errorEl.textContent = message;
+  errorEl.classList.add('show');
+  document.getElementById('auth-success').classList.remove('show');
+}
+
+// Show success message
+function showAuthSuccess(message) {
+  const successEl = document.getElementById('auth-success');
+  successEl.textContent = message;
+  successEl.classList.add('show');
+  document.getElementById('auth-error').classList.remove('show');
+}
+
+// Clear auth messages
+function clearAuthMessages() {
+  document.getElementById('auth-error').classList.remove('show');
+  document.getElementById('auth-success').classList.remove('show');
+}
 
 // ---------------- Utils ----------------
 
@@ -223,15 +438,3 @@ function loadStats() {
     document.getElementById("today-tracked").textContent = todayCount;
   });
 }
-
-// ---------------- Clear ----------------
-
-document.getElementById("clear-all")?.addEventListener("click", () => {
-  if (!confirm("Clear all tracked articles?")) return;
-
-  chrome.storage.local.set({ clusters: {} }, () => {
-    loadCurrent();
-    loadClusters();
-    loadStats();
-  });
-});
