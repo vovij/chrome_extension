@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware  
 from models import ArticleInput, ArticleResponse, SimilarArticle
 from engine import EmbeddingEngine
+from contextlib import asynccontextmanager
 from storage import save_article, load_all, get_article_by_url
 from extract_content import extract_article_content
 from pydantic import BaseModel
@@ -8,108 +10,65 @@ import time
 import os, json
 from datetime import datetime, timezone
 import math
+from dotenv import load_dotenv
+
+load_dotenv() # load .env variables
 
 # Import auth
 from auth import (
-    init_auth_db, 
-    UserCreate, 
-    UserLogin, 
-    Token, 
     User,
-    create_access_token,
-    get_user_by_email,
-    create_user,
-    verify_password,
-    get_current_user,
-    ACCESS_TOKEN_EXPIRE_MINUTES
+    UserCreate,
+    UserRead,
+    auth_backend,
+    create_db_and_tables,
+    current_active_user,
+    fastapi_users,
 )
 from datetime import timedelta
 
-app = FastAPI(title="SeenIt API")
+
+# ==================== STARTUP ====================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await create_db_and_tables()
+    yield
+
+app = FastAPI(title="SeenIt API", lifespan=lifespan)
+
+# Allow all origins in development — lock this down to your extension ID in production
+app.add_middleware(          # CORS Middleware
+    CORSMiddleware,
+    allow_origins=["*"],     # all origins allowed for now | REPLACE WITH ACTUAL ID ONCE READY TO DEPLOY
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 engine = EmbeddingEngine()
-
-# Initialize auth database
-init_auth_db()
-
 # ==================== AUTH ENDPOINTS ====================
 
-@app.post("/api/register", response_model=dict)
-async def register(user: UserCreate):
-    """Register a new user"""
-    # Validate password length
-    if len(user.password) < 6:
-        raise HTTPException(
-            status_code=400,
-            detail="Password must be at least 6 characters"
-        )
-    
-    # Create user
-    new_user = create_user(user.email, user.password)
-    
-    return {
-        "success": True,
-        "message": "User registered successfully",
-        "user": {
-            "id": new_user["id"],
-            "email": new_user["email"]
-        }
-    }
+# ── Auth routes ───────────────────────────────────────────────────────────────
+# POST /api/auth/login        → { access_token, token_type }
+# POST /api/register          → create account
+# GET  /api/users/me          → current user info
+# PATCH /api/users/me         → update email / change password
 
-@app.post("/api/login", response_model=dict)
-async def login(user: UserLogin):
-    """Login and get access token"""
-    # Find user
-    db_user = get_user_by_email(user.email)
-    
-    if not db_user:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password"
-        )
-    
-    # Verify password
-    if not verify_password(user.password, db_user["hashed_password"]):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password"
-        )
-    
-    # Create access token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": db_user["email"]}, 
-        expires_delta=access_token_expires
-    )
-    
-    return {
-        "success": True,
-        "message": "Login successful",
-        "user": {
-            "id": db_user["id"],
-            "email": db_user["email"]
-        },
-        "access_token": access_token,
-        "token_type": "bearer"
-    }
-
-@app.get("/api/health")
-async def health():
-    """Health check endpoint"""
-    return {
-        "success": True,
-        "message": "Server is running",
-        "storage": "sqlite"
-    }
-
-@app.get("/api/me", response_model=User)
-async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user info (protected route example)""" # TODO: Implement protected routes
-    return current_user
-
-# NEW: URL extraction model
-class URLRequest(BaseModel):
-    url: str
-
+app.include_router(
+    fastapi_users.get_auth_router(auth_backend),
+    prefix="/api/auth",
+    tags=["auth"],
+)
+app.include_router(
+    fastapi_users.get_register_router(UserRead, UserCreate),
+    prefix="/api",
+    tags=["auth"],
+)
+app.include_router(
+    fastapi_users.get_users_router(UserRead, UserCreate),
+    prefix="/api/users",
+    tags=["users"],
+)
 # =========================
 # Load post-train config
 # =========================
@@ -209,7 +168,7 @@ def _logreg_accept(E: float, domain_same: float, time_diff_days: float) -> bool:
 
 
 @app.post("/article", response_model=ArticleResponse)
-async def process_article(article: ArticleInput):
+async def process_article(article: ArticleInput, user: User = Depends(current_active_user)):
     start = time.time()
 
     # Check if this URL already exists
@@ -317,8 +276,12 @@ def health():
     return {"status": "ok"}
 
 
+class URLRequest(BaseModel):
+    url: str
+
+
 @app.post("/extract-url", response_model=ArticleResponse)
-async def extract_and_process_url(request: URLRequest):
+async def extract_and_process_url(request: URLRequest, user: User = Depends(current_active_user)):
     """
     Extract content from URL and process it for similarity
     This endpoint combines content extraction + similarity detection

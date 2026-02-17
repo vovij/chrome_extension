@@ -1,193 +1,95 @@
-from datetime import datetime, timedelta, timezone
-from typing import Optional
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, field_validator, Field
-from email_validator import validate_email, EmailNotValidError
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import sqlite3
 import os
+import uuid
+from typing import AsyncGenerator
 
-# Configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+from fastapi import Depends
+from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
+from fastapi_users.authentication import AuthenticationBackend, BearerTransport, JWTStrategy
+from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
-pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
-security = HTTPBearer()
+# ── Config ────────────────────────────────────────────────────────────────────
 
-# Models
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str
-    
-    @field_validator('email')
-    @classmethod
-    def validate_email_deliverability(cls, v: str) -> str:
-        """Extra validation: check if domain has MX records"""
-        try:
-            # This checks if domain can receive emails
-            valid = validate_email(v, check_deliverability=True)
-            return valid.normalized  # Returns normalized version
-        except EmailNotValidError as e:
-            raise ValueError(str(e))
-
-    @field_validator('password')
-    @classmethod
-    def validate_password_strength(cls, v: str) -> str:
-        """Simple character-based validation (matches frontend)"""
-        if len(v) < 8:
-            raise ValueError('\nPassword must be at least 8 characters')
-        
-        if ' ' in v:
-            raise ValueError('\nPassword cannot contain spaces')
-        
-        # Simple character checks (same as frontend)
-        has_upper = any(c.isupper() for c in v)
-        has_lower = any(c.islower() for c in v)
-        has_digit = any(c.isdigit() for c in v)
-        has_special = any(c in '!@#$%^&*(),.?":{}|<>_-+=' for c in v)
-        
-        missing = []
-        if not has_upper: missing.append('uppercase letter')
-        if not has_lower: missing.append('lowercase letter')
-        if not has_digit: missing.append('number')
-        if not has_special: missing.append('special character')
-        
-        if missing:
-            raise ValueError(f"Password must contain at least one {', one '.join(missing)}")
-        
-        return v
-
-class UserLogin(BaseModel):
-    email: EmailStr  # Uses email-validator library automatically
-    password: str = Field(min_length=1)
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-class TokenData(BaseModel):
-    email: Optional[str] = None
-
-class User(BaseModel):
-    id: int
-    email: str
-    created_at: str
-
-# Database setup
-DB_PATH = "users.db"
-
-def init_auth_db():
-    """Initialize users database"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        hashed_password TEXT NOT NULL,
-        created_at TEXT NOT NULL
+SECRET = os.getenv("SECRET")
+if not SECRET:
+    raise RuntimeError(
+        "SECRET env var is not set. "
+        "Generate one: python -c \"import secrets; print(secrets.token_hex(32))\""
     )
-    """)
-    
-    conn.commit()
-    conn.close()
 
-# Password utilities
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./seenit.db")
 
-def get_password_hash(password: str) -> str: 
-    return pwd_context.hash(password)
+# ── Database ──────────────────────────────────────────────────────────────────
 
-# JWT utilities
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta  
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=15) 
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+engine = create_async_engine(DATABASE_URL)
+async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
-# Database operations
-def get_user_by_email(email: str) -> Optional[dict]:
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        "SELECT id, email, hashed_password, created_at FROM users WHERE email = ?",
-        (email.lower(),)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    
-    if row:
-        return {
-            "id": row[0],
-            "email": row[1],
-            "hashed_password": row[2],
-            "created_at": row[3]
-        }
-    return None
 
-def create_user(email: str, password: str) -> dict:
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    hashed_password = get_password_hash(password)
-    created_at = datetime.now(timezone.utc).isoformat() + "Z" 
-    
-    try:
-        cursor.execute(
-            "INSERT INTO users (email, hashed_password, created_at) VALUES (?, ?, ?)",
-            (email.lower(), hashed_password, created_at)
-        )
-        conn.commit()
-        user_id = cursor.lastrowid
-        conn.close()
-        
-        return {
-            "id": user_id,
-            "email": email.lower(),
-            "created_at": created_at
-        }
-    except sqlite3.IntegrityError:
-        conn.close()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User with this email already exists"
-        )
+class Base(DeclarativeBase):
+    pass
 
-# Authentication dependency
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
-    """Dependency to get current authenticated user from JWT token"""
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    
-    try:
-        token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-        token_data = TokenData(email=email)
-    except JWTError:
-        raise credentials_exception
-    
-    user = get_user_by_email(email=token_data.email)
-    if user is None:
-        raise credentials_exception
-    
-    return User(
-        id=user["id"],
-        email=user["email"],
-        created_at=user["created_at"]
-    )
+
+class User(SQLAlchemyBaseUserTableUUID, Base):
+    pass  # add extra columns here if needed
+
+
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_maker() as session:
+        yield session
+
+
+async def get_user_db(session: AsyncSession = Depends(get_async_session)):
+    yield SQLAlchemyUserDatabase(session, User)
+
+
+# ── User Manager ──────────────────────────────────────────────────────────────
+
+class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
+    reset_password_token_secret = SECRET
+    verification_token_secret = SECRET
+
+    async def on_after_register(self, user: User, request=None):
+        print(f"[auth] new user: {user.email}") # can add email verification later if needed
+
+
+async def get_user_manager(user_db=Depends(get_user_db)):
+    yield UserManager(user_db)
+
+
+# ── Auth backend (JWT Bearer) ─────────────────────────────────────────────────
+
+bearer_transport = BearerTransport(tokenUrl="/api/auth/login")
+
+
+def get_jwt_strategy() -> JWTStrategy:
+    return JWTStrategy(secret=SECRET, lifetime_seconds=60 * 60 * 24 * 7)  # 7 days
+
+
+auth_backend = AuthenticationBackend(
+    name="jwt",
+    transport=bearer_transport,
+    get_strategy=get_jwt_strategy,
+)
+
+# ── FastAPIUsers instance ─────────────────────────────────────────────────────
+
+fastapi_users = FastAPIUsers[User, uuid.UUID](get_user_manager, [auth_backend])
+
+current_active_user = fastapi_users.current_user(active=True)
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
+
+class UserRead(schemas.BaseUser[uuid.UUID]):
+    pass
+
+
+class UserCreate(schemas.BaseUserCreate):
+    pass
+
+
+# ── DB init ───────────────────────────────────────────────────────────────────
+
+async def create_db_and_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

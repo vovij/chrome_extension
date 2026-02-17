@@ -121,22 +121,19 @@ async function handleLogin() {
   }
   
   try {
-    const response = await fetch(`${API_BASE_URL}/login`, {
+    const response = await fetch(`${API_BASE_URL}/auth/login`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email, password }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: email, password }),
     });
-    
+
     const data = await response.json();
-    
-    if (data.success) {
-      // Save user to storage
-      currentUser = data.user;
-      chrome.storage.local.set({ 
-        user: data.user,
-        token: data.access_token  // NEW: save token for future use
+
+    if (response.ok && data.access_token) {
+      currentUser = { email };
+      chrome.storage.local.set({
+        user: { email },
+        token: data.access_token,
       }, () => {
         showAuthSuccess('Login successful!');
         setTimeout(() => {
@@ -145,7 +142,7 @@ async function handleLogin() {
         }, 1000);
       });
     } else {
-      showAuthError(data.message || 'Login failed');
+      showAuthError(data.detail || 'Login failed');
     }
   } catch (error) {
     console.error('Login error:', error);
@@ -188,7 +185,7 @@ async function handleRegister() {
     
     const data = await response.json();
     
-    if (response.ok && data.success) {
+    if (response.ok) {
       showAuthSuccess('Registration successful! Please login.');
       // Switch to login form
       setTimeout(() => {
