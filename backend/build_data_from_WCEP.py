@@ -1,328 +1,290 @@
-import gzip, json, random, itertools, math
+import gzip, json, random, collections
+from pathlib import Path
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
-from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
+from utils import *
 
-# ========== Reproducible Randomness ==========
-def set_seed(seed: int):
-    random.seed(seed)
 
-# ========== Read WCEP ==========
-def read_jsonl_gz(path):
-    with gzip.open(path, "rt", encoding="utf-8") as f:
-        for line in f:
-            yield json.loads(line)
+# =============================
+# CONFIG (edit here)
+# =============================
+CONFIG = {
+    "BASE": "WCEP",                         # path to original WCEP {train|val|test}.jsonl.gz
+    "OUT": "out_wcep_dataset",              # output directory
+    "SEED": 2026,
 
-# ========== Text and Features ==========
-def tokenize_title(t: str):
-    if not t: return []
-    t = t.lower()
-    out = []
-    buf = []
-    for ch in t:
-        if ch.isalnum() or ch.isspace():
-            buf.append(ch)
-        else:
-            buf.append(" ")
-    for tok in "".join(buf).split():
-        if len(tok) > 1:
-            out.append(tok)
-    return out
+    # Post-train (val/test) limits: keep moderate size for calibration & eval
+    "LIMITS_PT": {
+        "max_events": 200,                  # at most N events
+        "max_articles_per_event": 5,        # K
+        "max_pos_pairs_per_cluster": 8,     # P
+        "negatives_per_positive": 1         # R
+    },
 
-def jaccard(a_tokens, b_tokens):
-    A, B = set(a_tokens), set(b_tokens)
-    if not A and not B: return 0.0
-    return len(A & B) / max(1, len(A | B))
+    # SFT (train) limits: you can scale up independently of PT
+    "LIMITS_SFT": {
+        "max_events": 2000,                 # increase for more SFT pairs
+        "max_articles_per_event": 6,        # K_train (e.g., 6→ C(6,2)=15 positives per cluster)
+        "max_pos_pairs_per_cluster": None,  # None = no cap, else integer cap
+        "hard_neg_for_triplet": True,       # if generating triplets, mine one hard negative per anchor
+        "generate_triplets": False          # set True if you want triplets for TripletLoss
+    },
 
-def hash32(s: str):
-    # FNV-1a 32-bit (stable, reproducible)
-    h = 2166136261
-    for c in s.encode("utf-8", errors="ignore"):
-        h ^= c
-        h = (h * 16777619) & 0xFFFFFFFF
-    return h
+    # Text building for embeddings/SimHash features
+    "TEXT_STRATEGY": "title+lede",          # "title" | "title+lede" | "title+text_clip"
+    "TEXT_CLIP_LEN": 2000                   # chars when using title+text_clip
+}
 
-def hash64(s: str):
-    a = hash32(s)
-    b = hash32(s + "#")
-    return (a << 32) | b
+# =============================
+# Build articles (per split)
+# =============================
+def article_text(a, text_strategy, clip_len):
+    title = a.get("title") or ""
+    body  = a.get("content") or a.get("text") or ""
+    if text_strategy == "title":
+        return title
+    if text_strategy == "title+lede":
+        # crude lede: first ~512 chars (adjust as needed)
+        lede = body[:512]
+        return f"{title}\n\n{lede}"
+    # title+text_clip
+    return f"{title}\n\n{body[:clip_len]}"
 
-def simhash64(text: str):
-    # Simple TF weighted simhash (64-bit)
-    toks = tokenize_title(text)  # More complete tokenization can be used for body text; simplified version used here
-    if not toks:
-        return 0
-    weights = defaultdict(int)
-    for t in toks:
-        weights[t] += 1
-    bits = [0]*64
-    for tok, w in weights.items():
-        hv = hash64(tok)
-        for i in range(64):
-            if (hv >> i) & 1:
-                bits[i] += w
-            else:
-                bits[i] -= w
-    out = 0
-    for i in range(64):
-        if bits[i] > 0:
-            out |= (1 << i)
-    return out
+def build_articles_for_split(split_path, limits, text_strategy, clip_len):
+    max_events = limits["max_events"]
+    K = limits["max_articles_per_event"]
 
-def hamming64(a: int, b: int):
-    x = a ^ b
-    cnt = 0
-    while x:
-        cnt += x & 1
-        x >>= 1
-    return cnt
-
-def normalize_url(url: str):
-    try:
-        u = urlparse(url)
-        host = u.hostname or ""
-        # Remove m. prefix
-        if host.startswith("m."):
-            host = host[2:]
-        # Remove common tracking parameters
-        qs = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
-              if not (k.startswith("utm_") or k in {"gclid", "fbclid"})]
-        # Remove trailing slash and AMP suffix
-        path = (u.path or "").rstrip("/")
-        if path.endswith("/amp"):
-            path = path[:-4]
-        newu = u._replace(netloc=host, query=urlencode(sorted(qs)), path=path)
-        return urlunparse(newu)
-    except Exception:
-        return url
-
-def extract_domain(url: str):
-    try:
-        return (urlparse(url).hostname or "").lower()
-    except:
-        return ""
-
-def parse_time_iso(t: str):
-    # WCEP is usually in ISO format; try to parse robustly
-    if not t:
-        return None
-    try:
-        if t.endswith("Z"):
-            return datetime.fromisoformat(t.replace("Z", "+00:00"))
-        return datetime.fromisoformat(t)
-    except Exception:
-        return None
-
-def days_diff(t1, t2):
-    if not t1 or not t2: return None
-    return abs((t1 - t2).days)
-
-# ========== Sampling and Generation ==========
-def build_articles(split_path, max_events=None, max_articles_per_event=5):
-    """
-    Returns articles list and by_cluster index
-    """
     articles = []
-    by_cluster = defaultdict(list)
+    by_cluster = collections.defaultdict(list)
 
     for ev in read_jsonl_gz(split_path):
         cid = ev.get("id")
         arts = ev.get("articles", [])
-        if not cid or not arts: 
+        if not cid or not arts:
             continue
 
-        # Sort by time first to ensure determinism
-        arts_sorted = sorted(
-            arts,
-            key=lambda a: a.get("time") or ""
-        )
+        # time sort for deterministic order
+        arts_sorted = sorted(arts, key=lambda a: a.get("time") or "")
 
-        # Truncate the number of articles per event to control scale
-        arts_take = arts_sorted[:max_articles_per_event]
+        # cap articles per event
+        take = arts_sorted[:K]
 
-        for a in arts_take:
+        # deduplicate by normalized URL within cluster (optional but recommended)
+        seen_urls = set()
+        tmp = []
+        for a in take:
+            nurl = normalize_url(a.get("url") or "")
+            if nurl in seen_urls:
+                continue
+            seen_urls.add(nurl)
+            tmp.append(a)
+        take = tmp
+
+        for a in take:
             aid = a.get("id")
-            title = a.get("title") or ""
-            url = a.get("url") or ""
-            # Text prefers content/text (specific field name depends on your data)
-            text = a.get("content") or a.get("text") or ""
+            if not aid:
+                continue
+            nurl = normalize_url(a.get("url") or "")
+            dom  = extract_domain(nurl)
             tiso = parse_time_iso(a.get("time") or "")
-            nurl = normalize_url(url)
-            dom = extract_domain(nurl)
-            # Calculate SimHash (body text can be processed more carefully; simplified here)
-            sh = simhash64(title + " " + text[:2000])  # Truncate to avoid being too long
+            text_for_sh = article_text(a, text_strategy, clip_len)
+            sh = simhash64_from_text(text_for_sh)
 
-            item = {
+            row = {
                 "id": aid,
                 "cluster_id": cid,
-                "title": title,
-                "url": url,
-                "canonical_url": nurl,
+                "title": a.get("title") or "",
+                "url": a.get("url") or "",
+                "canonical_url": nurl,             # deterministic normalized URL
                 "source_domain": dom,
                 "time_iso": tiso.isoformat() if tiso else None,
-                "text": text,
-                "simhash64": sh,
-                "title_tokens": tokenize_title(title),
+                "text": (a.get("content") or a.get("text") or ""),
+                "title_tokens": tokenize_title(a.get("title") or ""),
+                "simhash64": sh
             }
-            articles.append(item)
-            by_cluster[cid].append(item)
+            articles.append(row)
+            by_cluster[cid].append(row)
 
         if max_events is not None and len(by_cluster) >= max_events:
             break
 
-    # Sort globally by (cluster_id, id) for determinism
     articles.sort(key=lambda r: (r["cluster_id"], r["id"] or ""))
     return articles, by_cluster
 
-def sample_positive_pairs(by_cluster, max_pos_pairs_per_cluster=10, seed=42):
+# =============================
+# Post-train pairs (val/test)
+# =============================
+def comb2(n): return n*(n-1)//2 if n >= 2 else 0
+
+def sample_positive_pairs(by_cluster, max_pos_pairs_per_cluster, seed):
     set_seed(seed)
-    pairs_pos = []
+    pos = []
     for cid, arts in by_cluster.items():
         if len(arts) < 2:
             continue
-        # All pairwise combinations
-        comb = list(itertools.combinations(arts, 2))
-        # Shuffle and truncate
-        random.shuffle(comb)
-        comb = comb[:max_pos_pairs_per_cluster]
-        for a, b in comb:
-            pairs_pos.append((a, b, 1))
-    return pairs_pos
+        combs = []
+        for i in range(len(arts)):
+            for j in range(i+1, len(arts)):
+                combs.append((arts[i], arts[j]))
+        random.shuffle(combs)
+        if max_pos_pairs_per_cluster is not None:
+            combs = combs[:max_pos_pairs_per_cluster]
+        for a,b in combs:
+            pos.append((a,b,1))
+    return pos
 
-def sample_negative_pairs(articles, by_cluster, negatives_per_positive=1, seed=42):
-    """
-    Negative samples: Cross-cluster sampling. Try to make "hard negatives": same day or same domain preferred;
-    Simplified implementation: After giving a budget for each positive sample requirement, randomly sample from cross-cluster pairs overall,
-    and add some weighted priority for "same day/same domain" (approximated here using two-stage filtering).
-    """
-    set_seed(seed)
-    # Build index: cluster by date, by domain
-    date_buckets = defaultdict(list)
-    domain_buckets = defaultdict(list)
-
+def build_hard_negative_picker(articles):
+    date_buckets = collections.defaultdict(list)
+    domain_buckets = collections.defaultdict(list)
     for a in articles:
         day = (a["time_iso"] or "")[:10]
         if day: date_buckets[day].append(a)
-        if a["source_domain"]: domain_buckets[a["source_domain"]].append(a)
+        if a["source_domain"]:
+            domain_buckets[a["source_domain"]].append(a)
 
-    # All articles list
-    all_arts = articles
-
-    def pick_hard_negative(a):
-        # Prefer same day different cluster
+    def pick_neg_for(a):
         day = (a["time_iso"] or "")[:10]
+        # same day, different cluster
         cand = [x for x in date_buckets.get(day, []) if x["cluster_id"] != a["cluster_id"]]
         if not cand:
-            # Next prefer same domain different cluster
+            # same domain, different cluster
             cand = [x for x in domain_buckets.get(a["source_domain"], []) if x["cluster_id"] != a["cluster_id"]]
-        if not cand:
-            # Degrade to arbitrary cross-cluster
-            # Filter then randomize to ensure determinism
-            cand = [x for x in all_arts if x["cluster_id"] != a["cluster_id"]]
         return random.choice(cand) if cand else None
-
-    return pick_hard_negative
-
-def build_pairs(articles, by_cluster, max_pos_pairs_per_cluster=10, negatives_per_positive=1, seed=42):
-    # Positive samples
-    pos = sample_positive_pairs(by_cluster, max_pos_pairs_per_cluster, seed)
-    # Negative sample "picker"
-    pick_neg_for = sample_negative_pairs(articles, by_cluster, negatives_per_positive, seed)
-
-    pairs = []
-    # Construct positive pairs
-    for a, b, lab in pos:
-        pairs.append((a, b, lab))
-        # Assign several negative samples for each positive sample
-        for _ in range(negatives_per_positive):
-            # Find negative sample for a
-            n = pick_neg_for(a)
-            if n:
-                pairs.append((a, n, 0))
-
-    # Sort for determinism (does not change distribution, only output order)
-    pairs.sort(key=lambda t: (t[0]["cluster_id"], t[0]["id"] or "", t[1]["id"] or "", -t[2]))
-    return pairs
+    return pick_neg_for
 
 def pair_features(a, b):
-    # U: Whether canonical URLs are equal
-    U = 1 if (a["canonical_url"] == b["canonical_url"] and a["canonical_url"]) else 0
-    # T: Title Jaccard
-    T = jaccard(a["title_tokens"], b["title_tokens"])
-    # Sh: SimHash similarity
+    U  = 1 if (a["canonical_url"] and a["canonical_url"] == b["canonical_url"]) else 0
+    T  = jaccard(a["title_tokens"], b["title_tokens"])
     dH = hamming64(a["simhash64"], b["simhash64"])
     Sh = 1.0 - (dH / 64.0)
-    # Time difference (days)
-    t1 = parse_time_iso(a["time_iso"]) if isinstance(a["time_iso"], str) else None
-    t2 = parse_time_iso(b["time_iso"]) if isinstance(b["time_iso"], str) else None
-    dt = days_diff(t1, t2)
-    # Whether same domain
-    domain_same = 1 if a["source_domain"] == b["source_domain"] and a["source_domain"] else 0
-    return U, T, Sh, (dt if dt is not None else -1), domain_same
+    # day diff and domain-same
+    def parse(ts):
+        if ts is None: return None
+        try:
+            return datetime.fromisoformat(ts)
+        except Exception:
+            return None
+    t1 = parse(a["time_iso"]); t2 = parse(b["time_iso"])
+    dt = (abs((t1 - t2).days) if (t1 and t2) else -1)
+    dom_same = 1 if (a["source_domain"] and a["source_domain"] == b["source_domain"]) else 0
+    return U, round(T,4), round(Sh,4), dt, dom_same
 
-def write_jsonl(path, rows):
-    with open(path, "w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
-def generate_split(split_name, split_path, out_dir, *,
-                   seed=42,
-                   max_events=None,
-                   max_articles_per_event=5,
-                   max_pos_pairs_per_cluster=10,
-                   negatives_per_positive=1):
-    print(f"[{split_name}] loading...")
+def build_post_train_pairs(articles, by_cluster, limits, seed):
+    P = limits["max_pos_pairs_per_cluster"]
+    R = limits["negatives_per_positive"]
+    # positives
+    pos = sample_positive_pairs(by_cluster, P, seed)
+    # negatives
     set_seed(seed)
-    articles, by_cluster = build_articles(
-        split_path,
-        max_events=max_events,
-        max_articles_per_event=max_articles_per_event
-    )
-    print(f"[{split_name}] clusters={len(by_cluster)}, articles={len(articles)}")
-
-    # Write articles
-    art_out = [dict(a, **{"split": split_name}) for a in articles]
-    write_jsonl(f"{out_dir}/articles.{split_name}.jsonl", art_out)
-
-    # Construct pairs
-    pairs_raw = build_pairs(
-        articles, by_cluster,
-        max_pos_pairs_per_cluster=max_pos_pairs_per_cluster,
-        negatives_per_positive=negatives_per_positive,
-        seed=seed
-    )
-    pairs_out = []
-    for a, b, lab in pairs_raw:
-        U, T, Sh, dt, dom_same = pair_features(a, b)
-        pairs_out.append({
+    pick_neg = build_hard_negative_picker(articles)
+    pairs = []
+    for a,b,_ in pos:
+        pairs.append((a,b,1))
+        for _ in range(R):
+            n = pick_neg(a)
+            if n:
+                pairs.append((a,n,0))
+    # sort for deterministic output
+    pairs.sort(key=lambda t: (t[0]["cluster_id"], t[0]["id"] or "", t[1]["id"] or "", -t[2]))
+    # featurize
+    out = []
+    for a,b,lab in pairs:
+        U,T,Sh,dt,dom_same = pair_features(a,b)
+        out.append({
             "id1": a["id"], "id2": b["id"], "label": lab,
             "cluster_id1": a["cluster_id"], "cluster_id2": b["cluster_id"],
-            "U": U, "T": round(T, 4), "Sh": round(Sh, 4),
-            "time_diff_days": dt, "domain_same": dom_same,
-            "split": split_name
+            "U": U, "T": T, "Sh": Sh,
+            "time_diff_days": dt, "domain_same": dom_same
         })
-    write_jsonl(f"{out_dir}/pairs.{split_name}.jsonl", pairs_out)
-    print(f"[{split_name}] pairs={len(pairs_out)} written.")
+    return out
 
-# ========== Example Call ==========
-if __name__ == "__main__":
-    # Modify paths as needed
-    BASE = "WCEP"
-    OUT = "out_wcep_posttrain"
-    SEED = 2026
+# =============================
+# SFT pairs (train)
+# =============================
+def build_sft_pairs(by_cluster, limits, seed):
+    """
+    For MNRL: positives only (same-event). Optionally cap per cluster.
+    """
+    set_seed(seed)
+    Pcap = limits.get("max_pos_pairs_per_cluster", None)
+    pairs = []
+    for cid, arts in by_cluster.items():
+        if len(arts) < 2: continue
+        combs = []
+        for i in range(len(arts)):
+            for j in range(i+1, len(arts)):
+                combs.append((arts[i], arts[j]))
+        random.shuffle(combs)
+        if Pcap is not None:
+            combs = combs[:Pcap]
+        for a,b in combs:
+            pairs.append({"id1": a["id"], "id2": b["id"], "label": 1,
+                          "cluster_id": cid})
+    # deterministic order
+    pairs.sort(key=lambda r: (r["cluster_id"], r["id1"], r["id2"]))
+    return pairs
 
-    # Control scale: take at most N events per split, at most K articles per event, generate P positive samples per cluster, assign R negative samples per positive sample
-    LIMITS = dict(
-        seed=SEED,
-        max_events=200,              # Limit number of events (can be reduced for quick results)
-        max_articles_per_event=5,    # Control number of sampled articles per event
-        max_pos_pairs_per_cluster=8, # Max positive pairs per cluster
-        negatives_per_positive=1     # 1 negative sample per positive sample
+def build_sft_triplets(by_cluster, articles, limits, seed):
+    """
+    Optional: Triplets (anchor, positive, hard negative).
+    """
+    if not limits.get("generate_triplets", False):
+        return []
+    set_seed(seed)
+    pick_neg = build_hard_negative_picker(articles)
+    triplets = []
+    for cid, arts in by_cluster.items():
+        if len(arts) < 2: continue
+        for i in range(len(arts)-1):
+            a = arts[i]; p = arts[i+1]     # simple adjacent positive
+            n = pick_neg(a)
+            if n:
+                triplets.append({"anchor": a["id"], "positive": p["id"], "negative": n["id"],
+                                 "cluster_id": cid})
+    triplets.sort(key=lambda r: (r["cluster_id"], r["anchor"], r["positive"]))
+    return triplets
+
+# =============================
+# Driver
+# =============================
+def main():
+    C = CONFIG
+    set_seed(C["SEED"])
+    BASE = C["BASE"]; OUT = C["OUT"]
+
+    # 1) SFT from original train split
+    print("=== SFT (train split) ===")
+    sft_limits = C["LIMITS_SFT"]
+    arts_tr, byc_tr = build_articles_for_split(
+        f"{BASE}/train.jsonl.gz", sft_limits, C["TEXT_STRATEGY"], C["TEXT_CLIP_LEN"]
     )
+    print(f"train events (kept): {len(byc_tr)}, articles (kept): {len(arts_tr)}")
 
-    generate_split("train", f"{BASE}/train.jsonl.gz", OUT, **LIMITS)
-    generate_split("val",   f"{BASE}/val.jsonl.gz",   OUT, **LIMITS)
-    generate_split("test",  f"{BASE}/test.jsonl.gz",  OUT, **LIMITS)
+    write_jsonl(f"{OUT}/articles.train.jsonl", [dict(a, **{"split":"train"}) for a in arts_tr])
 
+    sft_pairs = build_sft_pairs(byc_tr, sft_limits, C["SEED"])
+    write_jsonl(f"{OUT}/sft_pairs.train.jsonl", sft_pairs)
+    print(f"SFT positives (pairs): {len(sft_pairs)}")
 
-    
+    sft_triplets = build_sft_triplets(byc_tr, arts_tr, sft_limits, C["SEED"])
+    if sft_triplets:
+        #write_jsonl(f"{OUT}/sft_triplets.train.jsonl", sft_triplets)
+        print(f"SFT triplets: {len(sft_triplets)}")
+
+    # 2) Post-train for val & test
+    for split in ["val", "test"]:
+        print(f"=== Post-train ({split}) ===")
+        pt_limits = C["LIMITS_PT"]
+        arts, byc = build_articles_for_split(
+            f"{BASE}/{split}.jsonl.gz", pt_limits, C["TEXT_STRATEGY"], C["TEXT_CLIP_LEN"]
+        )
+        print(f"{split} events (kept): {len(byc)}, articles (kept): {len(arts)}")
+        write_jsonl(f"{OUT}/articles.{split}.jsonl", [dict(a, **{"split": split}) for a in arts])
+
+        pairs = build_post_train_pairs(arts, byc, pt_limits, C["SEED"])
+        write_jsonl(f"{OUT}/pairs.{split}.jsonl", pairs)
+        pos = sum(1 for r in pairs if r["label"] == 1)
+        print(f"{split} pairs: {len(pairs)} (pos={pos}, neg={len(pairs)-pos})")
+
+if __name__ == "__main__":
+    main()

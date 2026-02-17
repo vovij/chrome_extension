@@ -2,7 +2,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator, Field
+from email_validator import validate_email, EmailNotValidError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import sqlite3
@@ -20,10 +21,48 @@ security = HTTPBearer()
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
+    
+    @field_validator('email')
+    @classmethod
+    def validate_email_deliverability(cls, v: str) -> str:
+        """Extra validation: check if domain has MX records"""
+        try:
+            # This checks if domain can receive emails
+            valid = validate_email(v, check_deliverability=True)
+            return valid.normalized  # Returns normalized version
+        except EmailNotValidError as e:
+            raise ValueError(str(e))
+
+    @field_validator('password')
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        """Simple character-based validation (matches frontend)"""
+        if len(v) < 8:
+            raise ValueError('\nPassword must be at least 8 characters')
+        
+        if ' ' in v:
+            raise ValueError('\nPassword cannot contain spaces')
+        
+        # Simple character checks (same as frontend)
+        has_upper = any(c.isupper() for c in v)
+        has_lower = any(c.islower() for c in v)
+        has_digit = any(c.isdigit() for c in v)
+        has_special = any(c in '!@#$%^&*(),.?":{}|<>_-+=' for c in v)
+        
+        missing = []
+        if not has_upper: missing.append('uppercase letter')
+        if not has_lower: missing.append('lowercase letter')
+        if not has_digit: missing.append('number')
+        if not has_special: missing.append('special character')
+        
+        if missing:
+            raise ValueError(f"Password must contain at least one {', one '.join(missing)}")
+        
+        return v
 
 class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
+    email: EmailStr  # Uses email-validator library automatically
+    password: str = Field(min_length=1)
 
 class Token(BaseModel):
     access_token: str

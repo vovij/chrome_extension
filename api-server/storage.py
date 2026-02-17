@@ -34,6 +34,20 @@ def save_article(article, embedding: np.ndarray):
     conn.commit()
 
 
+def get_article_by_url(url: str):
+    """Get article by URL if it exists"""
+    cursor.execute("SELECT url, title, embedding FROM articles WHERE url = ?", (url,))
+    row = cursor.fetchone()
+    
+    if row:
+        return {
+            'url': row[0],
+            'title': row[1],
+            'embedding': np.frombuffer(row[2], dtype=np.float32)
+        }
+    return None
+
+
 def load_all():
     cursor.execute("SELECT title, url, embedding FROM articles")
     rows = cursor.fetchall()

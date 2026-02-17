@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from models import ArticleInput, ArticleResponse, SimilarArticle
 from engine import EmbeddingEngine
-from storage import save_article, load_all
+from storage import save_article, load_all, get_article_by_url
 from extract_content import extract_article_content
 from pydantic import BaseModel
 import time
@@ -103,7 +103,7 @@ async def health():
 
 @app.get("/api/me", response_model=User)
 async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user info (protected route example)"""
+    """Get current user info (protected route example)""" # TODO: Implement protected routes
     return current_user
 
 # NEW: URL extraction model
@@ -212,6 +212,47 @@ def _logreg_accept(E: float, domain_same: float, time_diff_days: float) -> bool:
 async def process_article(article: ArticleInput):
     start = time.time()
 
+    # Check if this URL already exists
+    existing = get_article_by_url(article.url)
+    if existing:
+        print(f"===== URL ALREADY EXISTS: {article.url} =====")
+        # Use existing embedding
+        emb = existing['embedding']
+        
+        # Find matches (excluding self)
+        titles, urls, embs = load_all()
+        matches = []
+        
+        if embs is not None:
+            sims = embs @ emb
+            
+            for title, url, sim in zip(titles, urls, sims):
+                E = float(sim)
+                
+                if url == article.url:
+                    continue
+                
+                domain_same = 0.0
+                time_diff_days = 0.0
+                
+                if _logreg_accept(E, domain_same, time_diff_days):
+                    matches.append(
+                        SimilarArticle(
+                            title=title,
+                            url=url,
+                            similarity=E
+                        )
+                    )
+        
+        matches.sort(key=lambda x: x.similarity, reverse=True)
+        cluster_id = matches[0].url if matches else article.url
+        
+        return {
+            "similar_found": len(matches) > 0,
+            "cluster_id": cluster_id,
+            "matches": matches[:5]
+        }
+
     print("===== TEXT TO EMBED =====")
     print(article.title)
     print((article.content or "")[:500])
@@ -238,15 +279,12 @@ async def process_article(article: ArticleInput):
 
         for title, url, sim in zip(titles, urls, sims):
             E = float(sim)
+            
+            if url == article.url:
+                continue 
 
             # Compute light runtime features
-            # domain_same: 1 if same domain else 0
-            # NOTE: storage doesn't currently return domains/timestamps; if you add them later,
-            # you can make this more accurate.
-            # For now, we only have current domain; for old ones, we can't know -> use 0
             domain_same = 0.0
-
-            # time_diff_days: same issue (we don't have stored timestamps here) -> 0
             time_diff_days = 0.0
 
             # decision: logreg (if usable) else tau_embed_only
@@ -288,6 +326,52 @@ async def extract_and_process_url(request: URLRequest):
     try:
         print(f"===== EXTRACTING URL =====")
         print(f"URL: {request.url}")
+        
+        # Check if this URL already exists in database
+        existing = get_article_by_url(request.url)
+        if existing:
+            print(f"===== URL ALREADY EXISTS: {request.url} =====")
+            # Use existing embedding
+            emb = existing['embedding']
+            
+            # Find matches (excluding self)
+            titles, urls, embs = load_all()
+            matches = []
+            
+            if embs is not None:
+                sims = embs @ emb
+                
+                for title, url, sim in zip(titles, urls, sims):
+                    E = float(sim)
+                    
+                    if url == request.url:
+                        continue
+                    
+                    domain_same = 0.0
+                    time_diff_days = 0.0
+                    
+                    if _logreg_accept(E, domain_same, time_diff_days):
+                        matches.append(
+                            SimilarArticle(
+                                title=title,
+                                url=url,
+                                similarity=E
+                            )
+                        )
+            
+            matches.sort(key=lambda x: x.similarity, reverse=True)
+            cluster_id = matches[0].url if matches else request.url
+            
+            return {
+                "similar_found": len(matches) > 0,
+                "cluster_id": cluster_id,
+                "matches": matches[:5],
+                "extracted_article": {
+                    "title": existing['title'],
+                    "domain": "",
+                    "timestamp": None
+                }
+            }
         
         # Extract content from URL
         extracted = extract_article_content(request.url)
@@ -331,6 +415,10 @@ async def extract_and_process_url(request: URLRequest):
 
             for title, url, sim in zip(titles, urls, sims):
                 E = float(sim)
+                 
+                if url == article.url:
+                    continue  
+                    
                 domain_same = 0.0
                 time_diff_days = 0.0
 
@@ -353,7 +441,12 @@ async def extract_and_process_url(request: URLRequest):
         return {
             "similar_found": len(matches) > 0,
             "cluster_id": cluster_id,
-            "matches": matches[:5]
+            "matches": matches[:5],
+            "extracted_article": { 
+                "title": article.title,
+                "domain": article.domain,
+                "timestamp": article.timestamp
+            }
         }
         
     except HTTPException:

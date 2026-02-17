@@ -227,6 +227,12 @@
       <div class="form-group">
         <label for="register-password">Password</label>
         <input type="password" id="register-password" placeholder="••••••••" required>
+        
+        <!-- NEW: Minimal password strength bar -->
+        <div id="password-strength-bar" style="height: 3px; background: #e5e7eb; border-radius: 2px; margin-top: 6px; overflow: hidden; display: none;">
+          <div id="password-strength-fill" style="height: 100%; width: 0%; transition: all 0.3s; border-radius: 2px;"></div>
+        </div>
+        
       </div>
       <button class="btn btn-primary" id="register-btn">Register</button>
       <div class="auth-toggle">

@@ -158,13 +158,22 @@ async function handleRegister() {
   const email = document.getElementById('register-email').value;
   const password = document.getElementById('register-password').value;
   
-  if (!email || !password) {
-    showAuthError('Please enter both email and password');
+  // Clear previous errors
+  clearAuthMessages();
+
+  // Client-side validation
+  if (!email) {
+    showAuthError('Please enter an email address');
     return;
   }
-  
-  if (password.length < 6) {
-    showAuthError('Password must be at least 6 characters');
+
+  if (password.length < 8) {
+    showAuthError('Password must be at least 8 characters');
+    return;
+  }
+
+  if (!email || !password) {
+    showAuthError('Please enter both email and password');
     return;
   }
   
@@ -179,7 +188,7 @@ async function handleRegister() {
     
     const data = await response.json();
     
-    if (data.success) {
+    if (response.ok && data.success) {
       showAuthSuccess('Registration successful! Please login.');
       // Switch to login form
       setTimeout(() => {
@@ -189,7 +198,38 @@ async function handleRegister() {
         clearAuthMessages();
       }, 1500);
     } else {
-      showAuthError(data.message || 'Registration failed');
+      // NEW: Better error handling for Pydantic validation errors
+      let errorMessage = 'Registration failed';
+      
+      if (data.detail) {
+        if (Array.isArray(data.detail)) {
+          // Pydantic validation errors come as an array
+          errorMessage = data.detail.map(err => {
+            // Extract the meaningful error message
+            if (err.type === 'value_error' && err.msg) {
+              // Custom validator errors
+              return err.msg.replace('Value error, ', '');
+            } else if (err.msg) {
+              // Standard validation errors
+              return err.msg;
+            } else if (err.ctx && err.ctx.error) {
+              // Context errors
+              return err.ctx.error;
+            }
+            return 'Validation error';
+          }).join('. ');
+        } else if (typeof data.detail === 'string') {
+          // Simple string error
+          errorMessage = data.detail;
+        }
+      } else if (data.message) {
+        errorMessage = data.message;
+      }
+      
+      // Log the full error for debugging
+      console.error('Registration error details:', data);
+      
+      showAuthError(errorMessage);
     }
   } catch (error) {
     console.error('Registration error:', error);
@@ -441,3 +481,44 @@ function loadStats() {
     document.getElementById("today-tracked").textContent = todayCount;
   });
 }
+
+// Minimal password strength indicator
+document.addEventListener('DOMContentLoaded', () => {
+  const passwordInput = document.getElementById('register-password');
+  
+  if (passwordInput) {
+    passwordInput.addEventListener('input', (e) => {
+      const password = e.target.value;
+      const bar = document.getElementById('password-strength-bar');
+      const fill = document.getElementById('password-strength-fill');
+      
+      if (!password) {
+        bar.style.display = 'none';
+        return;
+      }
+      
+      bar.style.display = 'block';
+      
+      // Calculate strength (0-100%)
+      let strength = 0;
+      if (password.length >= 8) strength += 20;
+      if (/[A-Z]/.test(password)) strength += 20;
+      if (/[a-z]/.test(password)) strength += 20;
+      if (/\d/.test(password)) strength += 20;
+      if (/[!@#$%^&*(),.?":{}|<>_\-+=]/.test(password)) strength += 20;
+      
+      // Set width and color
+      fill.style.width = strength + '%';
+      
+      if (strength <= 40) {
+        fill.style.background = '#ef4444'; // Red
+      } else if (strength <= 60) {
+        fill.style.background = '#f59e0b'; // Orange
+      } else if (strength <= 80) {
+        fill.style.background = '#eab308'; // Yellow
+      } else {
+        fill.style.background = '#22c55e'; // Green
+      }
+    });
+  }
+});

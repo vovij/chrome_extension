@@ -20,4 +20,4 @@ class ArticleResponse(BaseModel):
     similar_found: bool
     cluster_id: str
     matches: List[SimilarArticle]
-    extracted_article: Optional[Dict[str, Any]] = None 
+    extracted_article: Optional[Dict[str, Any]] = None
