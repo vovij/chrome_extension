@@ -1,5 +1,6 @@
 import sqlite3
 import numpy as np
+from typing import Optional
 
 conn = sqlite3.connect("articles.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -7,23 +8,26 @@ cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS articles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
     url TEXT UNIQUE,
     title TEXT,
     content TEXT,
     domain TEXT,
     timestamp TEXT,
-    embedding BLOB
+    embedding BLOB,
+    UNIQUE(user_id, url)
 )
 """)
 conn.commit()
 
 
-def save_article(article, embedding: np.ndarray):
+def save_article(article, embedding: np.ndarray, user_id: str):
     cursor.execute("""
     INSERT OR IGNORE INTO articles
-    (url, title, content, domain, timestamp, embedding)
-    VALUES (?, ?, ?, ?, ?, ?)
+    (user_id, url, title, content, domain, timestamp, embedding)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
+        user_id,
         article.url,
         article.title,
         article.content,
@@ -34,9 +38,12 @@ def save_article(article, embedding: np.ndarray):
     conn.commit()
 
 
-def get_article_by_url(url: str):
+def get_article_by_url(url: str, user_id: str) -> Optional[dict]:
     """Get article by URL if it exists"""
-    cursor.execute("SELECT url, title, embedding FROM articles WHERE url = ?", (url,))
+    cursor.execute(
+        "SELECT url, title, embedding FROM articles WHERE url = ? AND user_id = ?",
+        (url, user_id)
+    )
     row = cursor.fetchone()
     
     if row:
@@ -48,8 +55,12 @@ def get_article_by_url(url: str):
     return None
 
 
-def load_all():
-    cursor.execute("SELECT title, url, embedding FROM articles")
+def load_all(user_id: str):
+    """Load all articles for specific user"""
+    cursor.execute(
+        "SELECT title, url, embedding FROM articles WHERE user_id = ?",
+        (user_id,)
+    )
     rows = cursor.fetchall()
 
     titles, urls, embs = [], [], []

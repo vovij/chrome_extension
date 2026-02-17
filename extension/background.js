@@ -23,6 +23,15 @@ function isTrackedSite(url) {
   }
 }
 
+// NEW: Get auth token from storage
+async function getAuthToken() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['token'], (result) => {
+      resolve(result.token || null);
+    });
+  });
+}
+
 // ---------- Article Extraction ----------
 
 async function extractArticle(tabId) {
@@ -61,9 +70,19 @@ async function extractArticle(tabId) {
 // ---------- API ----------
 
 async function sendArticle(article) {
+  const token = await getAuthToken();
+  
+  if (!token) {
+    console.error("SeenIt: No auth token found. User must login.");
+    throw new Error("Not authenticated");
+  }
+
   const response = await fetch(`${API_BASE_URL}/article`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { 
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`  // NEW: Send auth token
+    },
     body: JSON.stringify(article),
   });
 
@@ -77,9 +96,19 @@ async function sendArticle(article) {
 
 // NEW: Send URL for automatic extraction and processing
 async function sendURL(url) {
+  const token = await getAuthToken();
+  
+  if (!token) {
+    console.error("SeenIt: No auth token found. User must login.");
+    throw new Error("Not authenticated");
+  }
+
   const response = await fetch(`${API_BASE_URL}/extract-url`, {
     method: "POST", 
-    headers: { "Content-Type": "application/json" },
+    headers: { 
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`  // NEW: Send auth token
+    },
     body: JSON.stringify({ url }),
   });
 
@@ -156,6 +185,13 @@ function upsertClusters(article, result) {
 
 async function processTab(tabId, tab) {
   if (!tab?.url || !isTrackedSite(tab.url)) return;
+
+  // Check if user is authenticated
+  const token = await getAuthToken();
+  if (!token) {
+    console.log("SeenIt: User not authenticated, skipping tracking");
+    return;
+  }
 
   try {
     console.log("SeenIt: processing tab", tab.url);
@@ -265,7 +301,7 @@ async function processTab(tabId, tab) {
       type: 'basic',
       iconUrl: 'icon.png',
       title: 'SeenIt Error', 
-      message: 'Failed to process article'
+      message: err.message === 'Not authenticated' ? 'Please login to track articles' : 'Failed to process article'
     }).catch(() => {});
   }
 }

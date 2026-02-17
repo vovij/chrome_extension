@@ -170,16 +170,17 @@ def _logreg_accept(E: float, domain_same: float, time_diff_days: float) -> bool:
 @app.post("/article", response_model=ArticleResponse)
 async def process_article(article: ArticleInput, user: User = Depends(current_active_user)):
     start = time.time()
+    user_id = str(user.id)  # ← NEW: Get the authenticated user's ID
 
     # Check if this URL already exists
-    existing = get_article_by_url(article.url)
+    existing = get_article_by_url(article.url, user_id)  # Added user_id
     if existing:
         print(f"===== URL ALREADY EXISTS: {article.url} =====")
         # Use existing embedding
         emb = existing['embedding']
         
         # Find matches (excluding self)
-        titles, urls, embs = load_all()
+        titles, urls, embs = load_all(user_id) # Added user_id
         matches = []
         
         if embs is not None:
@@ -219,7 +220,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
 
     emb = engine.embed(article.title, article.content)
 
-    titles, urls, embs = load_all()
+    titles, urls, embs = load_all(user_id)
     matches = []
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -256,7 +257,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
                     )
                 )
 
-    save_article(article, emb)
+    save_article(article, emb, user_id) 
 
     print("MAX SIMILARITY:", max_sim)
 
@@ -286,19 +287,20 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
     Extract content from URL and process it for similarity
     This endpoint combines content extraction + similarity detection
     """
+    user_id = str(user.id)
     try:
-        print(f"===== EXTRACTING URL =====")
+        print(f"===== EXTRACTING URL FOR USER {user_id} =====")
         print(f"URL: {request.url}")
         
         # Check if this URL already exists in database
-        existing = get_article_by_url(request.url)
+        existing = get_article_by_url(request.url, user_id)
         if existing:
-            print(f"===== URL ALREADY EXISTS: {request.url} =====")
+            print(f"===== URL ALREADY EXISTS FOR USER {user_id}: {article.url} =====")
             # Use existing embedding
             emb = existing['embedding']
             
             # Find matches (excluding self)
-            titles, urls, embs = load_all()
+            titles, urls, embs = load_all(user_id)
             matches = []
             
             if embs is not None:
@@ -360,7 +362,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         # Process the article (same logic as /article endpoint)
         emb = engine.embed(article.title, article.content)
         
-        titles, urls, embs = load_all()
+        titles, urls, embs = load_all(user_id)
         matches = []
 
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -394,7 +396,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
                         )
                     )
 
-        save_article(article, emb)
+        save_article(article, emb, user_id)
 
         print("MAX SIMILARITY:", max_sim)
 
