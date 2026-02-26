@@ -142,7 +142,23 @@ async function handleLogin() {
         }, 1000);
       });
     } else {
-      showAuthError(data.detail || 'Login failed');
+      // Better error messages for login
+      let errorMessage = 'Login failed';
+      
+      if (data.detail) {
+        if (typeof data.detail === 'string') {
+          // Map technical error codes to user-friendly messages
+          if (data.detail === 'LOGIN_BAD_CREDENTIALS') {
+            errorMessage = 'Invalid email or password';
+          } else if (data.detail === 'LOGIN_USER_NOT_VERIFIED') {
+            errorMessage = 'Email not verified. Please check your inbox.';
+          } else {
+            errorMessage = data.detail;
+          }
+        }
+      }
+      
+      showAuthError(errorMessage);
     }
   } catch (error) {
     console.error('Login error:', error);
@@ -168,11 +184,6 @@ async function handleRegister() {
     showAuthError('Password must be at least 8 characters');
     return;
   }
-
-  if (!email || !password) {
-    showAuthError('Please enter both email and password');
-    return;
-  }
   
   try {
     const response = await fetch(`${API_BASE_URL}/register`, {
@@ -195,32 +206,31 @@ async function handleRegister() {
         clearAuthMessages();
       }, 1500);
     } else {
-      // NEW: Better error handling for Pydantic validation errors
+      // Better error handling
       let errorMessage = 'Registration failed';
       
       if (data.detail) {
-        if (Array.isArray(data.detail)) {
-          // Pydantic validation errors come as an array
-          errorMessage = data.detail.map(err => {
-            // Extract the meaningful error message
-            if (err.type === 'value_error' && err.msg) {
-              // Custom validator errors
-              return err.msg.replace('Value error, ', '');
-            } else if (err.msg) {
-              // Standard validation errors
-              return err.msg;
-            } else if (err.ctx && err.ctx.error) {
-              // Context errors
-              return err.ctx.error;
-            }
-            return 'Validation error';
-          }).join('. ');
-        } else if (typeof data.detail === 'string') {
-          // Simple string error
+        if (typeof data.detail === 'string') {
+          // Direct string errors from backend (already user-friendly)
           errorMessage = data.detail;
+        } else if (Array.isArray(data.detail)) {
+          // Pydantic validation errors - extract only the messages
+          errorMessage = data.detail
+            .map(err => {
+              if (err.msg) {
+                // Clean up the message
+                let msg = err.msg.replace('Value error, ', '');
+                // Remove technical email validation details
+                if (msg.includes('value is not a valid email address')) {
+                  return 'Please enter a valid email address';
+                }
+                return msg;
+              }
+              return null;
+            })
+            .filter(msg => msg !== null)
+            .join('. ');
         }
-      } else if (data.message) {
-        errorMessage = data.message;
       }
       
       // Log the full error for debugging

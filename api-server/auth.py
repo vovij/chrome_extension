@@ -1,13 +1,15 @@
 import os
 import uuid
+import re
 from typing import AsyncGenerator
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, BearerTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from pydantic import field_validator, ValidationError
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -52,6 +54,12 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_register(self, user: User, request=None):
         print(f"[auth] new user: {user.email}") # can add email verification later if needed
 
+    async def on_after_login(
+        self,
+        user: User,
+        request: Request | None = None,
+    ):
+        print(f"[auth] user logged in: {user.email}")
 
 async def get_user_manager(user_db=Depends(get_user_db)):
     yield UserManager(user_db)
@@ -85,7 +93,38 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
 
 
 class UserCreate(schemas.BaseUserCreate):
-    pass
+    """Custom UserCreate with password strength validation"""
+
+    # Override email field to use str instead of EmailStr (bypasses Pydantic's email validation)
+    email: str
+    
+    @field_validator('email')
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        """Custom email validation with simple error message"""
+        # Basic email pattern
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, v):
+            raise ValueError("Please enter a valid email address")
+        
+        return v.lower()
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        """
+        Validate password meets minimum requirements:
+        - At least 8 characters
+        - At least one uppercase letter
+        - At least one digit
+        """
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+        
+        if not re.search(r'[A-Z]', v) or not re.search(r'\d', v):
+            raise ValueError("Password must contain at least one uppercase letter and a number")
+        
+        return v
 
 
 # ── DB init ───────────────────────────────────────────────────────────────────

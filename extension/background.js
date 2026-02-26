@@ -159,7 +159,7 @@ function upsertClusters(article, result) {
     cluster.currentUrl = article.url;
     cluster.currentTitle = article.title;
 
-    // Include ONLY matches returned by API (не текущую статью)
+    // Include ONLY matches returned by API
     (result?.matches || []).forEach((m) => {
       add(m.title, m.url, m.similarity);
     });
@@ -279,6 +279,8 @@ async function processTab(tabId, tab) {
         chrome.tabs.sendMessage(tabId, {
           type: "SHOW_SEENIT_BANNER",
           matches: apiResult.matches || [],
+	  novelty: apiResult.novelty || null,
+	  noveltyDetails: apiResult.novelty_details || null,
         }).catch(() => {
           // if no content script on this page, ignore
         });

@@ -20,7 +20,10 @@ class EmbeddingEngine:
         return text
 
     def embed(self, title: str, content: str) -> np.ndarray:
-        text = title + "\n\n" + content[:2000]
+        content = content or ""
+        head = content[:1600]
+        tail = content[-400:] if len(content) > 2000 else ""
+        text = title + "\n\n" + head + ("\n\n" + tail if tail else "")
         text = self._format_text(MODEL_NAME, text)
         emb = self.model.encode(text, normalize_embeddings=True)
         return emb.astype(np.float32)

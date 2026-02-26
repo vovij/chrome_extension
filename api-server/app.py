@@ -1,5 +1,7 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware  
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from models import ArticleInput, ArticleResponse, SimilarArticle
 from engine import EmbeddingEngine
 from contextlib import asynccontextmanager
@@ -11,8 +13,13 @@ import os, json
 from datetime import datetime, timezone
 import math
 from dotenv import load_dotenv
+from fastapi_users.exceptions import UserAlreadyExists
 
 load_dotenv() # load .env variables
+
+# Clustering
+from cluster_utils import compute_centroid, compute_novelty_score
+from storage import get_embeddings_by_urls
 
 # Import auth
 from auth import (
@@ -46,6 +53,51 @@ app.add_middleware(          # CORS Middleware
 )
 
 engine = EmbeddingEngine()
+
+# ==================== ERROR HANDLERS ====================
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Custom handler for Pydantic validation errors.
+    Converts technical validation errors to user-friendly messages.
+    """
+    errors = exc.errors()
+    
+    # Extract user-friendly error messages
+    error_messages = []
+    for error in errors:
+        if error['type'] == 'value_error':
+            # Custom validator errors (like password validation)
+            msg = error.get('msg', '').replace('Value error, ', '')
+            error_messages.append(msg)
+        elif error['type'] == 'string_too_short':
+            field = error['loc'][-1] if error['loc'] else 'field'
+            error_messages.append(f"{field.capitalize()} is too short")
+        elif error['type'] == 'missing':
+            field = error['loc'][-1] if error['loc'] else 'field'
+            error_messages.append(f"{field.capitalize()} is required")
+        else:
+            # Default message
+            msg = error.get('msg', 'Validation error')
+            error_messages.append(msg)
+    
+    return JSONResponse(
+        status_code=400,
+        content={
+            "detail": ". ".join(error_messages) if error_messages else "Validation error"
+        }
+    )
+# Allow cross-origin requests from the Chrome extension (chrome-extension://),
+# otherwise the browser blocks requests to the local FastAPI backend due to CORS:
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ==================== AUTH ENDPOINTS ====================
 
 # ── Auth routes ───────────────────────────────────────────────────────────────
@@ -59,11 +111,33 @@ app.include_router(
     prefix="/api/auth",
     tags=["auth"],
 )
-app.include_router(
-    fastapi_users.get_register_router(UserRead, UserCreate),
-    prefix="/api",
-    tags=["auth"],
-)
+
+# Custom register endpoint with better error messages
+@app.post("/api/register", response_model=UserRead, tags=["auth"])
+async def register(
+    user_create: UserCreate,
+    request: Request,
+    user_manager = Depends(fastapi_users.get_user_manager)
+):
+    """
+    Register a new user with custom error handling.
+    """
+    try:
+        user = await user_manager.create(user_create, request=request)
+        return user
+    except UserAlreadyExists:
+        raise HTTPException(
+            status_code=400,
+            detail="A user with this email already exists"
+        )
+    except Exception as e:
+        # Log the error for debugging
+        print(f"Registration error: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Registration failed. Please try again."
+        )
+    
 app.include_router(
     fastapi_users.get_users_router(UserRead, UserCreate),
     prefix="/api/users",
@@ -120,7 +194,11 @@ def _load_post_cfg():
         POST_CFG = None
         LOGREG = None
 
-_load_post_cfg()
+# TEMPORARY: Disable post-train tau override.
+# The trained tau_embed_only (~0.395) is too permissive for real-world news similarity
+# in the browser setting and causes excessive false positives.
+# We keep the hardcoded default (0.7) until calibration is re-validated.
+# _load_post_cfg()
 
 def _time_diff_days(ts_iso: str, now_iso: str) -> float:
     # ISO strings -> absolute diff in days
@@ -180,20 +258,23 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         emb = existing['embedding']
         
         # Find matches (excluding self)
-        titles, urls, embs = load_all(user_id) # Added user_id
+        titles, urls, domains, timestamps, embs = load_all(user_id) # Added user_id
         matches = []
+
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        cur_domain = existing.get("domain", "")
         
         if embs is not None:
             sims = embs @ emb
             
-            for title, url, sim in zip(titles, urls, sims):
+            for title, url, od, ots, sim in zip(titles, urls, domains, timestamps, sims):
                 E = float(sim)
                 
                 if url == article.url:
                     continue
                 
-                domain_same = 0.0
-                time_diff_days = 0.0
+                domain_same = 1.0 if (cur_domain and od and cur_domain == od) else 0.0
+                time_diff_days = _time_diff_days(ots, now_iso) if ots else 0.0
                 
                 if _logreg_accept(E, domain_same, time_diff_days):
                     matches.append(
@@ -206,11 +287,34 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         
         matches.sort(key=lambda x: x.similarity, reverse=True)
         cluster_id = matches[0].url if matches else article.url
+
+        # -----------------------------
+        # CLUSTER CENTROID NOVELTY
+        # -----------------------------
+        
+        TOP_K = 5
+        top_matches = matches[:TOP_K]
+        reference_urls = [m.url for m in top_matches]
+        reference_embeddings = get_embeddings_by_urls(reference_urls)
+
+        novelty = None
+        if reference_embeddings:
+            centroid = compute_centroid(reference_embeddings)
+            novelty_score = compute_novelty_score(emb, centroid)
+            novelty = {
+                "novelty_score": round(novelty_score, 3),
+                "interpretation": (
+                    "very new" if novelty_score > 0.6
+                    else "somewhat new" if novelty_score > 0.3
+                    else "mostly repeated"
+                )
+            }
         
         return {
             "similar_found": len(matches) > 0,
             "cluster_id": cluster_id,
-            "matches": matches[:5]
+            "matches": matches[:5],
+            "novelty": novelty
         }
 
     print("===== TEXT TO EMBED =====")
@@ -220,7 +324,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
 
     emb = engine.embed(article.title, article.content)
 
-    titles, urls, embs = load_all(user_id)
+    titles, urls, domains, timestamps, embs = load_all(user_id)
     matches = []
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -237,15 +341,15 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         except Exception:
             max_sim = None
 
-        for title, url, sim in zip(titles, urls, sims):
+        for title, url, od, ots, sim in zip(titles, urls, domains, timestamps, sims):
             E = float(sim)
             
             if url == article.url:
                 continue 
 
             # Compute light runtime features
-            domain_same = 0.0
-            time_diff_days = 0.0
+            domain_same = 1.0 if (cur_domain and od and cur_domain == od) else 0.0
+            time_diff_days = _time_diff_days(ots, now_iso) if ots else 0.0
 
             # decision: logreg (if usable) else tau_embed_only
             if _logreg_accept(E, domain_same, time_diff_days):
@@ -262,13 +366,38 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
     print("MAX SIMILARITY:", max_sim)
 
     matches.sort(key=lambda x: x.similarity, reverse=True)
-
     cluster_id = matches[0].url if matches else article.url
+
+    # -----------------------------
+    # CLUSTER CENTROID NOVELTY
+    # -----------------------------
+
+    TOP_K = 5
+    top_matches = matches[:TOP_K]
+
+    reference_urls = [m.url for m in top_matches]
+    reference_embeddings = get_embeddings_by_urls(reference_urls)
+
+    novelty = None
+
+    if reference_embeddings:
+        centroid = compute_centroid(reference_embeddings)
+        novelty_score = compute_novelty_score(emb, centroid)
+
+        novelty = {
+            "novelty_score": round(novelty_score, 3),
+            "interpretation": (
+                "very new" if novelty_score > 0.6
+                else "somewhat new" if novelty_score > 0.3
+                else "mostly repeated"
+            )
+        }
 
     return {
         "similar_found": len(matches) > 0,
         "cluster_id": cluster_id,
-        "matches": matches[:5]
+        "matches": matches[:5],
+        "novelty": novelty
     }
 
 
@@ -300,21 +429,24 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
             emb = existing['embedding']
             
             # Find matches (excluding self)
-            titles, urls, embs = load_all(user_id)
+            titles, urls, domains, timestamps, embs = load_all(user_id)
             matches = []
+
+            now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            cur_domain = existing.get("domain", "")
             
             if embs is not None:
                 sims = embs @ emb
                 
-                for title, url, sim in zip(titles, urls, sims):
+                for title, url, od, ots, sim in zip(titles, urls, domains, timestamps, sims):
                     E = float(sim)
                     
                     if url == request.url:
                         continue
-                    
-                    domain_same = 0.0
-                    time_diff_days = 0.0
-                    
+                
+                    domain_same = 1.0 if (cur_domain and od and cur_domain == od) else 0.0
+                    time_diff_days = _time_diff_days(ots, now_iso) if ots else 0.0
+
                     if _logreg_accept(E, domain_same, time_diff_days):
                         matches.append(
                             SimilarArticle(
@@ -332,9 +464,9 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
                 "cluster_id": cluster_id,
                 "matches": matches[:5],
                 "extracted_article": {
-                    "title": existing['title'],
-                    "domain": "",
-                    "timestamp": None
+                    "title": existing["title"],
+                    "domain": existing.get("domain", ""),
+                    "timestamp": existing.get("timestamp", None),
                 }
             }
         
@@ -362,7 +494,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         # Process the article (same logic as /article endpoint)
         emb = engine.embed(article.title, article.content)
         
-        titles, urls, embs = load_all(user_id)
+        titles, urls, domains, timestamps, embs = load_all(user_id)
         matches = []
 
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -378,14 +510,14 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
             except Exception:
                 max_sim = None
 
-            for title, url, sim in zip(titles, urls, sims):
+            for title, url, od, ots, sim in zip(titles, urls, domains, timestamps, sims):
                 E = float(sim)
                  
                 if url == article.url:
                     continue  
                     
-                domain_same = 0.0
-                time_diff_days = 0.0
+                domain_same = 1.0 if (cur_domain and od and cur_domain == od) else 0.0
+                time_diff_days = _time_diff_days(ots, now_iso) if ots else 0.0
 
                 if _logreg_accept(E, domain_same, time_diff_days):
                     matches.append(
@@ -403,10 +535,35 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         matches.sort(key=lambda x: x.similarity, reverse=True)
         cluster_id = matches[0].url if matches else article.url
 
+        # -----------------------------
+        # CLUSTER CENTROID NOVELTY (same as /article)
+        # -----------------------------
+        TOP_K = 5
+        top_matches = matches[:TOP_K]
+
+        reference_urls = [m.url for m in top_matches]
+        reference_embeddings = get_embeddings_by_urls(reference_urls)
+
+        novelty = None
+
+        if reference_embeddings:
+            centroid = compute_centroid(reference_embeddings)
+            novelty_score = compute_novelty_score(emb, centroid)
+
+            novelty = {
+                "novelty_score": round(novelty_score, 3),
+                "interpretation": (
+                    "very new" if novelty_score > 0.6
+                    else "somewhat new" if novelty_score > 0.3
+                    else "mostly repeated"
+                )
+            }
+
         return {
             "similar_found": len(matches) > 0,
             "cluster_id": cluster_id,
             "matches": matches[:5],
+            "novelty": novelty,
             "extracted_article": { 
                 "title": article.title,
                 "domain": article.domain,
