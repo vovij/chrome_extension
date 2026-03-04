@@ -57,7 +57,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_login(
         self,
         user: User,
-        request: Request | None = None,
+        request: Request | None = None, response=None
     ):
         print(f"[auth] user logged in: {user.email}")
 

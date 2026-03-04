@@ -253,7 +253,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
     # Check if this URL already exists
     existing = get_article_by_url(article.url, user_id)  # Added user_id
     if existing:
-        print(f"===== URL ALREADY EXISTS: {article.url} =====")
+        print(f"===== URL ALREADY EXISTS FOR USER {user_id}: {article.url} =====")
         # Use existing embedding
         emb = existing['embedding']
         
@@ -295,7 +295,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         TOP_K = 5
         top_matches = matches[:TOP_K]
         reference_urls = [m.url for m in top_matches]
-        reference_embeddings = get_embeddings_by_urls(reference_urls)
+        reference_embeddings = get_embeddings_by_urls(reference_urls, user_id)
 
         novelty = None
         if reference_embeddings:
@@ -376,7 +376,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
     top_matches = matches[:TOP_K]
 
     reference_urls = [m.url for m in top_matches]
-    reference_embeddings = get_embeddings_by_urls(reference_urls)
+    reference_embeddings = get_embeddings_by_urls(reference_urls, user_id)
 
     novelty = None
 
@@ -542,7 +542,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         top_matches = matches[:TOP_K]
 
         reference_urls = [m.url for m in top_matches]
-        reference_embeddings = get_embeddings_by_urls(reference_urls)
+        reference_embeddings = get_embeddings_by_urls(reference_urls, user_id)
 
         novelty = None
 

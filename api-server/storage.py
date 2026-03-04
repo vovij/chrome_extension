@@ -9,7 +9,7 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS articles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
-    url TEXT UNIQUE,
+    url TEXT,
     title TEXT,
     content TEXT,
     domain TEXT,
@@ -59,8 +59,11 @@ def get_article_by_url(url: str, user_id: str) -> Optional[dict]:
     }
 
 
-def load_all():
-    cursor.execute("SELECT title, url, domain, timestamp, embedding FROM articles WHERE user_id = ?")
+def load_all(user_id: str):
+    cursor.execute(
+        "SELECT title, url, domain, timestamp, embedding FROM articles WHERE user_id = ?",
+        (user_id,)
+    )
     rows = cursor.fetchall()
 
     titles, urls, domains, timestamps, embs = [], [], [], [], []
@@ -77,7 +80,7 @@ def load_all():
     return titles, urls, domains, timestamps, np.vstack(embs)
 
 
-def get_embeddings_by_urls(urls: List[str]) -> List[np.ndarray]:
+def get_embeddings_by_urls(urls: List[str], user_id: str) -> List[np.ndarray]:
     """
     Return embeddings for a set of URLs (used to compute centroid).
     """
@@ -86,8 +89,8 @@ def get_embeddings_by_urls(urls: List[str]) -> List[np.ndarray]:
 
     placeholders = ",".join("?" for _ in urls)
     cursor.execute(
-        f"SELECT embedding FROM articles WHERE url IN ({placeholders})",
-        urls
+        f"SELECT embedding FROM articles WHERE url IN ({placeholders}) AND user_id = ?",
+        (*urls, user_id)
     )
     rows = cursor.fetchall()
 

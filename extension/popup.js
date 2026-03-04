@@ -246,19 +246,23 @@ async function handleRegister() {
 
 // Handle logout
 function handleLogout() {
-  chrome.storage.local.remove(['user'], () => {
-    currentUser = null;
-    if (refreshIntervalId) {
-      clearInterval(refreshIntervalId);
-      refreshIntervalId = null;
-    }
-    showAuthContainer();
-    // Clear form fields
-    document.getElementById('login-email').value = '';
-    document.getElementById('login-password').value = '';
-    document.getElementById('register-email').value = '';
-    document.getElementById('register-password').value = '';
-    clearAuthMessages();
+  chrome.storage.local.get(["user"], (res) => {
+    const userId = res.user?.email || "anonymous";
+    const storageKey = `clusters_${userId}`;
+
+    chrome.storage.local.remove([storageKey, "user", "token"], () => {
+      currentUser = null;
+      if (refreshIntervalId) {
+        clearInterval(refreshIntervalId);
+        refreshIntervalId = null;
+      }
+      showAuthContainer();
+      document.getElementById("login-email").value = "";
+      document.getElementById("login-password").value = "";
+      document.getElementById("register-email").value = "";
+      document.getElementById("register-password").value = "";
+      clearAuthMessages();
+    });
   });
 }
 
@@ -418,52 +422,54 @@ function loadCurrent() {
 // ---------------- List ----------------
 
 function loadClusters() {
-  chrome.storage.local.get(["clusters"], (res) => {
-    const clusters = res.clusters || {};
-    const container = document.getElementById("seen-list");
+  chrome.storage.local.get(["user"], (userRes) => {
+    const userId = userRes.user?.email || "anonymous";
+    const storageKey = `clusters_${userId}`;
 
-    let entries = Object.values(clusters);
+    chrome.storage.local.get([storageKey], (res) => {
+      const clusters = res[storageKey] || {};
+      const container = document.getElementById("seen-list");
 
-    if (entries.length === 0) {
-      container.innerHTML = `<p style="color:#6b7280">No articles yet</p>`;
-      return;
-    }
+      let entries = Object.values(clusters);
 
-    // newest first
-    entries.sort((a, b) => new Date(b.lastVisited || 0) - new Date(a.lastVisited || 0));
+      if (entries.length === 0) {
+        container.innerHTML = `<p style="color:#6b7280">No articles yet</p>`;
+        return;
+      }
 
-    container.innerHTML = entries
-      .map(
-        (cluster) => `
-      <div class="list-item">
-        <div style="font-weight:600;margin-bottom:6px">
-          📌 ${escapeHtml(cluster.representativeTitle || "Cluster")}
+      entries.sort((a, b) => new Date(b.lastVisited || 0) - new Date(a.lastVisited || 0));
+
+      container.innerHTML = entries
+        .map(
+          (cluster) => `
+        <div class="list-item">
+          <div style="font-weight:600;margin-bottom:6px">
+            📌 ${escapeHtml(cluster.representativeTitle || "Cluster")}
+          </div>
+          <ul style="padding-left:16px;margin:0">
+            ${(cluster.articles || [])
+              .slice()
+              .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+              .map(
+                (a) => `
+                <li style="font-size:13px;margin-bottom:6px">
+                  <a href="${escapeHtml(a.url)}" target="_blank">${escapeHtml(a.title)}</a>
+                  <span style="color:#6b7280;font-size:11px">
+                    (${((a.similarity || 0) * 100).toFixed(0)}%)
+                  </span>
+                </li>
+              `
+              )
+              .join("")}
+          </ul>
+          <div style="font-size:11px;color:#9ca3af;margin-top:6px">
+            Last visited: ${cluster.lastVisited ? new Date(cluster.lastVisited).toLocaleString() : "—"}
+          </div>
         </div>
-
-        <ul style="padding-left:16px;margin:0">
-          ${(cluster.articles || [])
-            .slice()
-            .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
-            .map(
-              (a) => `
-              <li style="font-size:13px;margin-bottom:6px">
-                <a href="${escapeHtml(a.url)}" target="_blank">${escapeHtml(a.title)}</a>
-                <span style="color:#6b7280;font-size:11px">
-                  (${(((a.similarity || 0) * 100)).toFixed(0)}%)
-                </span>
-              </li>
-            `
-            )
-            .join("")}
-        </ul>
-
-        <div style="font-size:11px;color:#9ca3af;margin-top:6px">
-          Last visited: ${cluster.lastVisited ? new Date(cluster.lastVisited).toLocaleString() : "—"}
-        </div>
-      </div>
-    `
-      )
-      .join("");
+      `
+        )
+        .join("");
+    });
   });
 }
 

@@ -123,64 +123,62 @@ async function sendURL(url) {
 // ---------- Storage: clusters (for popup) ----------
 
 function upsertClusters(article, result) {
-  chrome.storage.local.get(["clusters"], (res) => {
-    const clusters = res.clusters || {};
+  chrome.storage.local.get(["user"], (userRes) => {
+    const userId = userRes.user?.email || "anonymous";
+    const storageKey = `clusters_${userId}`;
 
-    const clusterId = result?.cluster_id || article.url;
-    const cluster = clusters[clusterId] || {
-      representativeTitle: article.title,
-      articles: [],
-      lastVisited: article.timestamp,
-    };
+    chrome.storage.local.get([storageKey], (res) => {
+      const clusters = res[storageKey] || {};
 
-    // Keep representative title fresh
-    if (!cluster.representativeTitle) cluster.representativeTitle = article.title;
+      const clusterId = result?.cluster_id || article.url;
+      const cluster = clusters[clusterId] || {
+        representativeTitle: article.title,
+        articles: [],
+        lastVisited: article.timestamp,
+      };
 
-    // Helper to avoid duplicates
-    const add = (title, url, similarity = 0) => {
-      if (!url) return;
-      
+      if (!cluster.representativeTitle) cluster.representativeTitle = article.title;
 
-      const existingIndex = cluster.articles.findIndex((a) => a.url === url);
-      
-      if (existingIndex >= 0) {
-        if (similarity > (cluster.articles[existingIndex].similarity || 0)) {
-          cluster.articles[existingIndex] = { 
-            title: title || cluster.articles[existingIndex].title, 
-            url, 
-            similarity 
-          };
+      const add = (title, url, similarity = 0) => {
+        if (!url) return;
+        const existingIndex = cluster.articles.findIndex((a) => a.url === url);
+        if (existingIndex >= 0) {
+          if (similarity > (cluster.articles[existingIndex].similarity || 0)) {
+            cluster.articles[existingIndex] = {
+              title: title || cluster.articles[existingIndex].title,
+              url,
+              similarity,
+            };
+          }
+        } else {
+          cluster.articles.push({ title: title || "Untitled", url, similarity });
         }
-      } else {
-        cluster.articles.push({ title: title || "Untitled", url, similarity });
-      }
-    };
+      };
 
-    cluster.currentUrl = article.url;
-    cluster.currentTitle = article.title;
+      cluster.currentUrl = article.url;
+      cluster.currentTitle = article.title;
 
-    // Include ONLY matches returned by API
-    (result?.matches || []).forEach((m) => {
-      add(m.title, m.url, m.similarity);
-    });
+      (result?.matches || []).forEach((m) => {
+        add(m.title, m.url, m.similarity);
+      });
 
-    cluster.lastVisited = article.timestamp;
-    clusters[clusterId] = cluster;
+      cluster.lastVisited = article.timestamp;
+      clusters[clusterId] = cluster;
 
-    chrome.storage.local.set({ clusters }, () => {
-      if (chrome.runtime.lastError) {
-        console.error("SeenIt: storage error:", chrome.runtime.lastError);
-      } else {
-        console.log("SeenIt: clusters saved", { 
-          clusterId, 
-          count: cluster.articles.length,
-          articlesInCluster: cluster.articles.map(a => a.title)
-        });
-      }
+      chrome.storage.local.set({ [storageKey]: clusters }, () => {
+        if (chrome.runtime.lastError) {
+          console.error("SeenIt: storage error:", chrome.runtime.lastError);
+        } else {
+          console.log("SeenIt: clusters saved", {
+            clusterId,
+            count: cluster.articles.length,
+            articlesInCluster: cluster.articles.map((a) => a.title),
+          });
+        }
+      });
     });
   });
 }
-
 // ---------- Core Logic ----------
 
 async function processTab(tabId, tab) {
