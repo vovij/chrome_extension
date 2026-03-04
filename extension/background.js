@@ -157,6 +157,7 @@ function upsertClusters(article, result) {
 
       cluster.currentUrl = article.url;
       cluster.currentTitle = article.title;
+      
 
       (result?.matches || []).forEach((m) => {
         add(m.title, m.url, m.similarity);
@@ -181,33 +182,38 @@ function upsertClusters(article, result) {
 }
 // ---------- Core Logic ----------
 
+// ---------- Core Logic ----------
+
 async function processTab(tabId, tab) {
   if (!tab?.url || !isTrackedSite(tab.url)) return;
 
-  // Check if user is authenticated
   const token = await getAuthToken();
   if (!token) {
     console.log("SeenIt: User not authenticated, skipping tracking");
     return;
   }
 
+  // Get current user to scope the cache per user
+  const { user } = await chrome.storage.local.get(["user"]);
+  const userId = user?.email || "anonymous";
+  const cacheKey = `recentlyProcessed_${userId}`;
+
   try {
     console.log("SeenIt: processing tab", tab.url);
-    
-    const result = await chrome.storage.local.get(['recentlyProcessed']);
-    const recentlyProcessed = result.recentlyProcessed || {};
+
+    const result = await chrome.storage.local.get([cacheKey]);
+    const recentlyProcessed = result[cacheKey] || {};
     const now = Date.now();
-    
 
     if (recentlyProcessed[tab.url] && (now - recentlyProcessed[tab.url]) < 5 * 60 * 1000) {
       console.log("SeenIt: article already processed recently, skipping", tab.url);
       return;
     }
-    
+
     // Method 1: Try local extraction first (faster)
     const extracted = await extractArticle(tabId);
-    
-    // NEW: skip category/section pages (too many links)
+
+    // Skip category/section pages (too many links)
     if ((extracted.linkCount || 0) > 120) {
       console.log("SeenIt: skipped likely category page (too many links)", extracted.linkCount, tab.url);
       return;
@@ -217,9 +223,8 @@ async function processTab(tabId, tab) {
 
     // Check if local extraction worked well
     if (extracted.title && extracted.content && extracted.content.length > 200) {
-      // Use local extraction + send to API
       console.log("SeenIt: using local extraction");
-      
+
       const article = {
         title: extracted.title,
         content: extracted.content,
@@ -229,29 +234,28 @@ async function processTab(tabId, tab) {
       };
 
       apiResult = await sendArticle(article);
-      
+
     } else {
-      // Fallback: Use server-side extraction
       console.log("SeenIt: local extraction failed, using server-side extraction");
       console.log("Local extraction result:", extracted);
-      
+
       apiResult = await sendURL(tab.url);
     }
 
     recentlyProcessed[tab.url] = now;
-    
+
     Object.keys(recentlyProcessed).forEach(url => {
       if (now - recentlyProcessed[url] > 60 * 60 * 1000) {
         delete recentlyProcessed[url];
       }
     });
-    
-    chrome.storage.local.set({ recentlyProcessed });
+
+    chrome.storage.local.set({ [cacheKey]: recentlyProcessed });
 
     // Save for popup and show banner
     if (apiResult) {
       let articleForStorage;
-      
+
       if (extracted.title && extracted.content?.length > 200) {
         articleForStorage = {
           title: extracted.title,
@@ -260,7 +264,6 @@ async function processTab(tabId, tab) {
           timestamp: new Date().toISOString(),
         };
       } else {
-        //
         const extractedInfo = apiResult.extracted_article;
         articleForStorage = {
           title: extractedInfo?.title || `Article from ${new URL(tab.url).hostname}`,
@@ -277,15 +280,15 @@ async function processTab(tabId, tab) {
         chrome.tabs.sendMessage(tabId, {
           type: "SHOW_SEENIT_BANNER",
           matches: apiResult.matches || [],
-	  novelty: apiResult.novelty || null,
-	  noveltyDetails: apiResult.novelty_details || null,
+          novelty: apiResult.novelty || null,
+          noveltyDetails: apiResult.novelty_details || null,
         }).catch(() => {
           // if no content script on this page, ignore
         });
       }
 
-      console.log("SeenIt: processed OK", { 
-        url: tab.url, 
+      console.log("SeenIt: processed OK", {
+        url: tab.url,
         cluster: apiResult?.cluster_id,
         method: extracted.content?.length > 200 ? "local" : "server",
         matches: apiResult?.matches?.length || 0,
@@ -295,12 +298,11 @@ async function processTab(tabId, tab) {
 
   } catch (err) {
     console.error("SeenIt error:", err);
-    
-    // Show error notification (optional)
+
     chrome.notifications?.create({
       type: 'basic',
       iconUrl: 'icon.png',
-      title: 'SeenIt Error', 
+      title: 'SeenIt Error',
       message: err.message === 'Not authenticated' ? 'Please login to track articles' : 'Failed to process article'
     }).catch(() => {});
   }
