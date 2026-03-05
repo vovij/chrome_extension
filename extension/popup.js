@@ -246,23 +246,19 @@ async function handleRegister() {
 
 // Handle logout
 function handleLogout() {
-  chrome.storage.local.get(["user"], (res) => {
-    const userId = res.user?.email || "anonymous";
-    const storageKey = `clusters_${userId}`;
-
-    chrome.storage.local.remove([storageKey, "user", "token"], () => {
-      currentUser = null;
-      if (refreshIntervalId) {
-        clearInterval(refreshIntervalId);
-        refreshIntervalId = null;
-      }
-      showAuthContainer();
-      document.getElementById("login-email").value = "";
-      document.getElementById("login-password").value = "";
-      document.getElementById("register-email").value = "";
-      document.getElementById("register-password").value = "";
-      clearAuthMessages();
-    });
+  chrome.storage.local.remove(['user'], () => {
+    currentUser = null;
+    if (refreshIntervalId) {
+      clearInterval(refreshIntervalId);
+      refreshIntervalId = null;
+    }
+    showAuthContainer();
+    // Clear form fields
+    document.getElementById('login-email').value = '';
+    document.getElementById('login-password').value = '';
+    document.getElementById('register-email').value = '';
+    document.getElementById('register-password').value = '';
+    clearAuthMessages();
   });
 }
 
@@ -296,6 +292,39 @@ function isTrackedSite(url) {
     return TRACKED_SITES.some((site) => hostname.includes(site));
   } catch {
     return false;
+  }
+}
+
+function normalizeUrl(raw) {
+  try {
+    const u = new URL(raw);
+    u.hash = "";
+    u.hostname = u.hostname.toLowerCase().replace(/^www\./, "");
+    u.protocol = (u.protocol || "https:").toLowerCase();
+
+    if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
+      u.pathname = u.pathname.slice(0, -1);
+    }
+
+    const dropKeys = new Set([
+      "ref", "cmpid", "ocid", "taid", "rpc",
+      "at_medium", "at_campaign", "at_link_id", "at_link_type",
+      "at_link_origin", "at_format", "at_ptr_name", "at_bbc_team",
+      "fbclid", "gclid", "gbraid", "wbraid",
+      "mc_cid", "mc_eid",
+    ]);
+
+    for (const key of Array.from(u.searchParams.keys())) {
+      const k = key.toLowerCase();
+      if (k.startsWith("utm_") || k.startsWith("at_") || dropKeys.has(k)) {
+        u.searchParams.delete(key);
+      }
+    }
+
+    u.search = u.searchParams.toString() ? `?${u.searchParams.toString()}` : "";
+    return u.toString();
+  } catch {
+    return raw;
   }
 }
 
@@ -421,37 +450,53 @@ function loadCurrent() {
 
 // ---------------- List ----------------
 
-function loadClusters() {
-  chrome.storage.local.get(["user"], (userRes) => {
-    const userId = userRes.user?.email || "anonymous";
-    const storageKey = `clusters_${userId}`;
+async function fetchClusters() {
+  const { token } = await chrome.storage.local.get(["token"]);
+  const res = await fetch(`${API_BASE_URL}/history`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch history");
+  return (await res.json()).clusters;
+}
 
-    chrome.storage.local.get([storageKey], (res) => {
-      const clusters = res[storageKey] || {};
-      const container = document.getElementById("seen-list");
+async function loadClusters() {
+  const container = document.getElementById("seen-list");
+  try {
+    const clusters = await fetchClusters();
 
-      let entries = Object.values(clusters);
+    let entries = Object.values(clusters);
 
-      if (entries.length === 0) {
-        container.innerHTML = `<p style="color:#6b7280">No articles yet</p>`;
-        return;
-      }
+    if (entries.length === 0) {
+      container.innerHTML = `<p style="color:#6b7280">No articles yet</p>`;
+      return;
+    }
 
-      entries.sort((a, b) => new Date(b.lastVisited || 0) - new Date(a.lastVisited || 0));
+    // newest first
+    entries.sort((a, b) => new Date(b.lastVisited || 0) - new Date(a.lastVisited || 0));
 
-      container.innerHTML = entries
-        .map(
-          (cluster) => `
-        <div class="list-item">
-          <div style="font-weight:600;margin-bottom:6px">
-            📌 ${escapeHtml(cluster.representativeTitle || "Cluster")}
-          </div>
-          <ul style="padding-left:16px;margin:0">
-            ${(cluster.articles || [])
-              .slice()
-              .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
-              .map(
-                (a) => `
+    container.innerHTML = entries
+      .map(
+        (cluster) => `
+      <div class="list-item">
+        <div style="font-weight:600;margin-bottom:6px">
+          📌 ${escapeHtml(cluster.representativeTitle || "Cluster")}
+        </div>
+
+        <ul style="padding-left:16px;margin:0">
+          ${(cluster.articles || [])
+            .filter((a) => {
+              if (!a?.url) return false;
+              const aNorm = normalizeUrl(a.url);
+              const repNorm = normalizeUrl(cluster.representativeUrl || "");
+              const curNorm = normalizeUrl(cluster.currentUrl || "");
+              if (repNorm && aNorm === repNorm) return false;
+              if (curNorm && aNorm === curNorm) return false;
+              return true;
+            })
+            .slice()
+            .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+            .map(
+              (a) => `
                 <li style="font-size:13px;margin-bottom:6px">
                   <a href="${escapeHtml(a.url)}" target="_blank">${escapeHtml(a.title)}</a>
                   <span style="color:#6b7280;font-size:11px">
@@ -459,25 +504,27 @@ function loadClusters() {
                   </span>
                 </li>
               `
-              )
-              .join("")}
-          </ul>
-          <div style="font-size:11px;color:#9ca3af;margin-top:6px">
-            Last visited: ${cluster.lastVisited ? new Date(cluster.lastVisited).toLocaleString() : "—"}
-          </div>
+            )
+            .join("")}
+        </ul>
+
+        <div style="font-size:11px;color:#9ca3af;margin-top:6px">
+          Last visited: ${cluster.lastVisited ? new Date(cluster.lastVisited).toLocaleString() : "—"}
         </div>
-      `
-        )
-        .join("");
-    });
-  });
+      </div>
+    `
+      )
+      .join("");
+  } catch (e) {
+    container.innerHTML = `<p style="color:#ef4444">Error loading history</p>`;
+  }
 }
 
 // ---------------- Stats ----------------
 
-function loadStats() {
-  chrome.storage.local.get(["clusters"], (res) => {
-    const clusters = res.clusters || {};
+async function loadStats() {
+  try {
+    const clusters = await fetchClusters();
 
     const totalClusters = Object.keys(clusters).length;
     document.getElementById("total-tracked").textContent = totalClusters;
@@ -492,7 +539,7 @@ function loadStats() {
     });
 
     document.getElementById("today-tracked").textContent = todayCount;
-  });
+  } catch (_) {}
 }
 
 // Minimal password strength indicator

@@ -32,6 +32,47 @@ async function getAuthToken() {
   });
 }
 
+function normalizeUrl(raw) {
+  try {
+    const u = new URL(raw);
+    u.hash = "";
+
+    // Normalize hostname
+    u.hostname = u.hostname.toLowerCase().replace(/^www\./, "");
+    u.protocol = (u.protocol || "https:").toLowerCase();
+
+    // Trim trailing slash (except root)
+    if (u.pathname.length > 1 && u.pathname.endsWith("/")) {
+      u.pathname = u.pathname.slice(0, -1);
+    }
+
+    // Drop tracking params (expanded)
+    const dropKeys = new Set([
+      "ref", "cmpid", "ocid", "taid", "rpc",
+      // BBC / common publisher tracking
+      "at_medium", "at_campaign", "at_link_id", "at_link_type",
+      "at_link_origin", "at_format", "at_ptr_name", "at_bbc_team",
+      // common ad/click ids
+      "fbclid", "gclid", "gbraid", "wbraid",
+      // common newsletter params
+      "mc_cid", "mc_eid",
+    ]);
+
+    for (const key of Array.from(u.searchParams.keys())) {
+      const k = key.toLowerCase();
+      if (k.startsWith("utm_") || k.startsWith("at_") || dropKeys.has(k)) {
+        u.searchParams.delete(key);
+      }
+    }
+
+    // Rebuild query
+    u.search = u.searchParams.toString() ? `?${u.searchParams.toString()}` : "";
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
 // ---------- Article Extraction ----------
 
 async function extractArticle(tabId) {
@@ -121,99 +162,221 @@ async function sendURL(url) {
 }
 
 // ---------- Storage: clusters (for popup) ----------
-
 function upsertClusters(article, result) {
-  chrome.storage.local.get(["user"], (userRes) => {
-    const userId = userRes.user?.email || "anonymous";
-    const storageKey = `clusters_${userId}`;
+  chrome.storage.local.get(["clusters"], (res) => {
+    const clusters = res.clusters || {};
 
-    chrome.storage.local.get([storageKey], (res) => {
-      const clusters = res[storageKey] || {};
+    const clusterIdRaw = result?.cluster_id || article.url;
+    const clusterId = normalizeUrl(clusterIdRaw);
 
-      const clusterId = result?.cluster_id || article.url;
-      const cluster = clusters[clusterId] || {
-        representativeTitle: article.title,
-        articles: [],
-        lastVisited: article.timestamp,
-      };
+    // Create target cluster if missing.
+    // IMPORTANT: representative stays FIRST seen
+    const target = clusters[clusterId] || {
+      representativeTitle: article.title,
+      representativeUrl: article.url,
+      articles: [],
+      lastVisited: article.timestamp,
+      currentUrl: article.url, // keep current separately
+      currentTitle: article.title,
+      currentSimilarity: null, // similarity of current page to representative (computed)
+    };
 
-      if (!cluster.representativeTitle) cluster.representativeTitle = article.title;
+    const repNorm = normalizeUrl(target.representativeUrl || article.url);
+    const currentNorm = normalizeUrl(article.url);
 
-      const add = (title, url, similarity = 0) => {
-        if (!url) return;
-        const existingIndex = cluster.articles.findIndex((a) => a.url === url);
-        if (existingIndex >= 0) {
-          if (similarity > (cluster.articles[existingIndex].similarity || 0)) {
-            cluster.articles[existingIndex] = {
-              title: title || cluster.articles[existingIndex].title,
-              url,
-              similarity,
-            };
-          }
-        } else {
-          cluster.articles.push({ title: title || "Untitled", url, similarity });
-        }
-      };
+    // Membership set used for overlap detection and the "one cluster per URL" rule.
+    // Includes representative, current page, and all matched URLs.
+    const memberUrls = new Set([repNorm, currentNorm]);
+    (result?.matches || []).forEach((m) => {
+      if (m?.url) memberUrls.add(normalizeUrl(m.url));
+    });
 
-      cluster.currentUrl = article.url;
-      cluster.currentTitle = article.title;
+    // Compute similarity of CURRENT page to REPRESENTATIVE (from real backend match)
+    // If the current page IS the representative, it's trivially 1.0.
+    let currentSimilarity = null;
+    if (currentNorm === repNorm) {
+      currentSimilarity = 1.0;
+    } else {
+      const repMatch = (result?.matches || []).find(
+        (m) => m?.url && normalizeUrl(m.url) === repNorm
+      );
+      if (
+        repMatch &&
+        typeof repMatch.similarity === "number" &&
+        Number.isFinite(repMatch.similarity)
+      ) {
+        currentSimilarity = repMatch.similarity;
+      }
+    }
+
+    // Helper: add/update scored bullets in target.articles
+    // Dedupe by normalized URL; keep max similarity.
+    const add = (title, url, similarity) => {
+      if (!url) return;
+      const norm = normalizeUrl(url);
+
+      // Never list representative or current page as a scored bullet
+      if (norm === repNorm) return;
+      if (norm === currentNorm) return;
+
+      // Only accept REAL computed similarities
+      if (typeof similarity !== "number" || !Number.isFinite(similarity)) return;
+
+      const idx = target.articles.findIndex(
+        (a) => a?.url && normalizeUrl(a.url) === norm
+      );
+
+      if (idx >= 0) {
+        const prevSim = target.articles[idx].similarity;
+        const nextSim =
+          typeof prevSim === "number" && Number.isFinite(prevSim)
+            ? Math.max(prevSim, similarity)
+            : similarity;
+
+        target.articles[idx] = {
+          title: target.articles[idx].title || title || "Untitled",
+          url: target.articles[idx].url || url,
+          similarity: nextSim,
+        };
+      } else {
+        target.articles.push({ title: title || "Untitled", url, similarity });
+      }
+    };
+
+    // Merge overlapping clusters into target
+    for (const [otherId, other] of Object.entries(clusters)) {
+      const otherKey = normalizeUrl(otherId);
+      if (otherKey === clusterId) continue;
+
+      const otherRepNorm = other?.representativeUrl
+        ? normalizeUrl(other.representativeUrl)
+        : null;
+
+      const otherCurrentNorm = other?.currentUrl
+        ? normalizeUrl(other.currentUrl)
+        : null;
+
+      let overlaps = false;
+
+      // Overlap via representative or currentUrl
+      if (otherRepNorm && memberUrls.has(otherRepNorm)) overlaps = true;
+      if (!overlaps && otherCurrentNorm && memberUrls.has(otherCurrentNorm)) overlaps = true;
+
+      // Overlap via scored bullets
+      if (!overlaps && Array.isArray(other?.articles)) {
+        overlaps = other.articles.some(
+          (a) => a?.url && memberUrls.has(normalizeUrl(a.url))
+        );
+      }
+
+      if (!overlaps) continue;
+
+      // Pull scored bullets over using add() (dedupe + max similarity)
+      (other.articles || []).forEach((a) => {
+        add(a.title || "Untitled", a.url, a.similarity);
+        if (a?.url) memberUrls.add(normalizeUrl(a.url));
+      });
+
+      // Treat other rep/current as members too (helps stripping later)
+      if (otherRepNorm) memberUrls.add(otherRepNorm);
+      if (otherCurrentNorm) memberUrls.add(otherCurrentNorm);
+
+      // DO NOT replace representative (we keep first seen)
+      delete clusters[otherId];
+    }
+
+    // Update current page fields (like background_old) + its computed similarity-to-rep
+    target.currentUrl = article.url;
+    target.currentTitle = article.title;
+    target.currentSimilarity = currentSimilarity;
+    target.lastVisited = article.timestamp;
+
+    // Add new scored matches from API (rep/current are filtered out by add())
+    (result?.matches || []).forEach((m) => add(m.title, m.url, m.similarity));
+
+    // HARD INVARIANT: a URL may appear in only one cluster
+    for (const [otherId, other] of Object.entries(clusters)) {
+      const otherKey = normalizeUrl(otherId);
+      if (otherKey === clusterId) continue;
+
+      // Strip bullets
+      if (Array.isArray(other?.articles)) {
+        other.articles = other.articles.filter(
+          (a) => a?.url && !memberUrls.has(normalizeUrl(a.url))
+        );
+      }
+
+      // If other cluster's representative/current conflicts, or it has no bullets, delete it.
+      const oRep = other?.representativeUrl ? normalizeUrl(other.representativeUrl) : null;
+      const oCur = other?.currentUrl ? normalizeUrl(other.currentUrl) : null;
+
+      const repConflicts = oRep && memberUrls.has(oRep);
+      const curConflicts = oCur && memberUrls.has(oCur);
+      const hasArticles = (other?.articles || []).length > 0;
+
+      if (!hasArticles || repConflicts || curConflicts) delete clusters[otherId];
+    }
+
+    // Final dedupe pass (normalized URL)
+    const seen = new Set();
+    target.articles = target.articles.filter((a) => {
+      if (!a?.url) return false;
+      const k = normalizeUrl(a.url);
+      if (!k) return false;
+      if (k === repNorm) return false;
+      if (k === currentNorm) return false;
+      if (seen.has(k)) return false;
+      seen.add(k);
+
+      return typeof a.similarity === "number" && Number.isFinite(a.similarity);
+    });
+
+    // Store under normalized key
+    // Extra safety: never allow representative URL into articles[]
+    target.articles = (target.articles || []).filter(
+      (a) => a?.url && normalizeUrl(a.url) !== repNorm
+    );
       
+    clusters[clusterId] = target;
 
-      (result?.matches || []).forEach((m) => {
-        add(m.title, m.url, m.similarity);
-      });
-
-      cluster.lastVisited = article.timestamp;
-      clusters[clusterId] = cluster;
-
-      chrome.storage.local.set({ [storageKey]: clusters }, () => {
-        if (chrome.runtime.lastError) {
-          console.error("SeenIt: storage error:", chrome.runtime.lastError);
-        } else {
-          console.log("SeenIt: clusters saved", {
-            clusterId,
-            count: cluster.articles.length,
-            articlesInCluster: cluster.articles.map((a) => a.title),
-          });
-        }
-      });
+    chrome.storage.local.set({ clusters }, () => {
+      if (chrome.runtime.lastError) {
+        console.error("SeenIt: storage error:", chrome.runtime.lastError);
+      }
     });
   });
 }
-// ---------- Core Logic ----------
 
 // ---------- Core Logic ----------
 
 async function processTab(tabId, tab) {
-  if (!tab?.url || !isTrackedSite(tab.url)) return;
+    if (!tab?.url || !isTrackedSite(tab.url)) return;
+    const normUrl = normalizeUrl(tab.url);
 
+  // Check if user is authenticated
   const token = await getAuthToken();
   if (!token) {
     console.log("SeenIt: User not authenticated, skipping tracking");
     return;
   }
 
-  // Get current user to scope the cache per user
-  const { user } = await chrome.storage.local.get(["user"]);
-  const userId = user?.email || "anonymous";
-  const cacheKey = `recentlyProcessed_${userId}`;
-
   try {
     console.log("SeenIt: processing tab", tab.url);
-
-    const result = await chrome.storage.local.get([cacheKey]);
-    const recentlyProcessed = result[cacheKey] || {};
+    
+    const result = await chrome.storage.local.get(['recentlyProcessed']);
+    const recentlyProcessed = result.recentlyProcessed || {};
     const now = Date.now();
+    
 
-    if (recentlyProcessed[tab.url] && (now - recentlyProcessed[tab.url]) < 5 * 60 * 1000) {
+    if (recentlyProcessed[normUrl] && (now - recentlyProcessed[normUrl]) < 5 * 60 * 1000) {
       console.log("SeenIt: article already processed recently, skipping", tab.url);
       return;
     }
-
+    
     // Method 1: Try local extraction first (faster)
     const extracted = await extractArticle(tabId);
-
-    // Skip category/section pages (too many links)
+    
+    // NEW: skip category/section pages (too many links)
     if ((extracted.linkCount || 0) > 120) {
       console.log("SeenIt: skipped likely category page (too many links)", extracted.linkCount, tab.url);
       return;
@@ -223,52 +386,55 @@ async function processTab(tabId, tab) {
 
     // Check if local extraction worked well
     if (extracted.title && extracted.content && extracted.content.length > 200) {
+      // Use local extraction + send to API
       console.log("SeenIt: using local extraction");
-
+      
       const article = {
         title: extracted.title,
         content: extracted.content,
-        url: tab.url,
-        domain: new URL(tab.url).hostname.replace("www.", ""),
+        url: normUrl,
+        domain: new URL(normUrl).hostname.replace("www.", ""),
         timestamp: new Date().toISOString(),
       };
 
       apiResult = await sendArticle(article);
-
+      
     } else {
+      // Fallback: Use server-side extraction
       console.log("SeenIt: local extraction failed, using server-side extraction");
       console.log("Local extraction result:", extracted);
-
-      apiResult = await sendURL(tab.url);
+      
+      apiResult = await sendURL(normUrl);
     }
 
-    recentlyProcessed[tab.url] = now;
-
+    recentlyProcessed[normUrl] = now;
+    
     Object.keys(recentlyProcessed).forEach(url => {
       if (now - recentlyProcessed[url] > 60 * 60 * 1000) {
         delete recentlyProcessed[url];
       }
     });
-
-    chrome.storage.local.set({ [cacheKey]: recentlyProcessed });
+    
+    chrome.storage.local.set({ recentlyProcessed });
 
     // Save for popup and show banner
     if (apiResult) {
       let articleForStorage;
-
+      
       if (extracted.title && extracted.content?.length > 200) {
         articleForStorage = {
           title: extracted.title,
-          url: tab.url,
-          domain: new URL(tab.url).hostname.replace("www.", ""),
+          url: normUrl,
+          domain: new URL(normUrl).hostname.replace("www.", ""),
           timestamp: new Date().toISOString(),
         };
       } else {
+        //
         const extractedInfo = apiResult.extracted_article;
         articleForStorage = {
-          title: extractedInfo?.title || `Article from ${new URL(tab.url).hostname}`,
-          url: tab.url,
-          domain: extractedInfo?.domain || new URL(tab.url).hostname.replace("www.", ""),
+          title: extractedInfo?.title || `Article from ${new URL(normUrl).hostname}`,
+          url: normUrl,
+          domain: extractedInfo?.domain || new URL(normUrl).hostname.replace("www.", ""),
           timestamp: extractedInfo?.timestamp || new Date().toISOString(),
         };
       }
@@ -280,15 +446,15 @@ async function processTab(tabId, tab) {
         chrome.tabs.sendMessage(tabId, {
           type: "SHOW_SEENIT_BANNER",
           matches: apiResult.matches || [],
-          novelty: apiResult.novelty || null,
-          noveltyDetails: apiResult.novelty_details || null,
+	  novelty: apiResult.novelty || null,
+	  noveltyDetails: apiResult.novelty_details || null,
         }).catch(() => {
           // if no content script on this page, ignore
         });
       }
 
-      console.log("SeenIt: processed OK", {
-        url: tab.url,
+      console.log("SeenIt: processed OK", { 
+        url: tab.url, 
         cluster: apiResult?.cluster_id,
         method: extracted.content?.length > 200 ? "local" : "server",
         matches: apiResult?.matches?.length || 0,
@@ -298,11 +464,12 @@ async function processTab(tabId, tab) {
 
   } catch (err) {
     console.error("SeenIt error:", err);
-
+    
+    // Show error notification (optional)
     chrome.notifications?.create({
       type: 'basic',
       iconUrl: 'icon.png',
-      title: 'SeenIt Error',
+      title: 'SeenIt Error', 
       message: err.message === 'Not authenticated' ? 'Please login to track articles' : 'Failed to process article'
     }).catch(() => {});
   }

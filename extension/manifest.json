@@ -5,7 +5,6 @@
   "description": "Automatically track news articles and detect similar content using AI",
   "permissions": ["activeTab", "storage", "tabs", "notifications", "scripting"],
   "host_permissions": [
-    "https://seenit.doc.ic.ac.uk/*",
     "http://localhost:8000/*",
     "https://*.bbc.co.uk/*",
     "https://*.reuters.com/*",

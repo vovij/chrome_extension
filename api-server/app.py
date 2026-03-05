@@ -5,7 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from models import ArticleInput, ArticleResponse, SimilarArticle
 from engine import EmbeddingEngine
 from contextlib import asynccontextmanager
-from storage import save_article, load_all, get_article_by_url
+from storage import save_article, load_all, get_article_by_url, normalize_url
 from extract_content import extract_article_content
 from pydantic import BaseModel
 import time
@@ -251,6 +251,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
     user_id = str(user.id)  # ← NEW: Get the authenticated user's ID
 
     # Check if this URL already exists
+    article.url = normalize_url(article.url)
     existing = get_article_by_url(article.url, user_id)  # Added user_id
     if existing:
         print(f"===== URL ALREADY EXISTS FOR USER {user_id}: {article.url} =====")
@@ -286,7 +287,8 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
                     )
         
         matches.sort(key=lambda x: x.similarity, reverse=True)
-        cluster_id = matches[0].url if matches else article.url
+        candidate_urls = [article.url] + [m.url for m in matches[:5]]
+        cluster_id = min(candidate_urls) if candidate_urls else article.url
 
         # -----------------------------
         # CLUSTER CENTROID NOVELTY
@@ -295,7 +297,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         TOP_K = 5
         top_matches = matches[:TOP_K]
         reference_urls = [m.url for m in top_matches]
-        reference_embeddings = get_embeddings_by_urls(reference_urls, user_id)
+        reference_embeddings = get_embeddings_by_urls(reference_urls)
 
         novelty = None
         if reference_embeddings:
@@ -361,13 +363,13 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
                     )
                 )
 
-    save_article(article, emb, user_id) 
-
     print("MAX SIMILARITY:", max_sim)
 
     matches.sort(key=lambda x: x.similarity, reverse=True)
-    cluster_id = matches[0].url if matches else article.url
+    candidate_urls = [article.url] + [m.url for m in matches[:5]]
+    cluster_id = min(candidate_urls) if candidate_urls else article.url
 
+    save_article(article, emb, user_id, cluster_id=cluster_id)
     # -----------------------------
     # CLUSTER CENTROID NOVELTY
     # -----------------------------
@@ -376,7 +378,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
     top_matches = matches[:TOP_K]
 
     reference_urls = [m.url for m in top_matches]
-    reference_embeddings = get_embeddings_by_urls(reference_urls, user_id)
+    reference_embeddings = get_embeddings_by_urls(reference_urls)
 
     novelty = None
 
@@ -400,6 +402,32 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         "novelty": novelty
     }
 
+@app.get("/api/history")
+async def get_history(user: User = Depends(current_active_user)):
+    from storage import cursor
+    
+    cursor.execute("""
+        SELECT cluster_id, title, url, timestamp
+        FROM articles WHERE user_id = ?
+        ORDER BY timestamp DESC
+    """, (str(user.id),))
+
+    clusters = {}
+    for cluster_id, title, url, timestamp in cursor.fetchall():
+        cid = cluster_id or url
+        if cid not in clusters:
+            clusters[cid] = {
+                "representativeTitle": title,
+                "representativeUrl": cid,
+                "articles": [],
+                "lastVisited": timestamp,
+            }
+        else:
+            clusters[cid]["articles"].append({"title": title, "url": url, "similarity": 0})
+            if timestamp and timestamp > (clusters[cid]["lastVisited"] or ""):
+                clusters[cid]["lastVisited"] = timestamp
+
+    return {"clusters": clusters}
 
 @app.get("/")
 def health():
@@ -422,6 +450,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         print(f"URL: {request.url}")
         
         # Check if this URL already exists in database
+        request.url = normalize_url(request.url)
         existing = get_article_by_url(request.url, user_id)
         if existing:
             print(f"===== URL ALREADY EXISTS FOR USER {user_id}: {article.url} =====")
@@ -457,7 +486,8 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
                         )
             
             matches.sort(key=lambda x: x.similarity, reverse=True)
-            cluster_id = matches[0].url if matches else request.url
+            candidate_urls = [request.url] + [m.url for m in matches[:5]]
+            cluster_id = min(candidate_urls) if candidate_urls else request.url
             
             return {
                 "similar_found": len(matches) > 0,
@@ -487,6 +517,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
             domain=extracted['domain'],
             timestamp=extracted['timestamp']
         )
+        article.url = normalize_url(article.url)
         
         print(f"Extracted: {article.title}")
         print(f"Content length: {len(article.content)}")
@@ -528,13 +559,13 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
                         )
                     )
 
-        save_article(article, emb, user_id)
-
         print("MAX SIMILARITY:", max_sim)
 
         matches.sort(key=lambda x: x.similarity, reverse=True)
-        cluster_id = matches[0].url if matches else article.url
+        candidate_urls = [article.url] + [m.url for m in matches[:5]]
+        cluster_id = min(candidate_urls) if candidate_urls else article.url
 
+        save_article(article, emb, user_id, cluster_id=cluster_id)
         # -----------------------------
         # CLUSTER CENTROID NOVELTY (same as /article)
         # -----------------------------
@@ -542,7 +573,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         top_matches = matches[:TOP_K]
 
         reference_urls = [m.url for m in top_matches]
-        reference_embeddings = get_embeddings_by_urls(reference_urls, user_id)
+        reference_embeddings = get_embeddings_by_urls(reference_urls)
 
         novelty = None
 
