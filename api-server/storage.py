@@ -72,7 +72,7 @@ def save_article(article, embedding: np.ndarray, user_id: str, cluster_id: str =
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id,
-        article.url,
+        normalize_url(article.url),
         article.title,
         article.content,
         article.domain,
