@@ -1,5 +1,5 @@
 // SeenIt Popup — auth + CURRENT page + LIST of clusters (similar articles)
-const API_BASE_URL = 'https://seenit.doc.ic.ac.uk/api';
+const API_BASE_URL = 'http://localhost:8000/api';
 
 const TRACKED_SITES = [
   "bbc.co.uk",

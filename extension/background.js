@@ -1,7 +1,7 @@
 // background.js — SeenIt (MV3)
 // SPA-safe, saves to chrome.storage.local.clusters for popup
 
-const API_BASE_URL = "https://seenit.doc.ic.ac.uk";
+const API_BASE_URL = "http://localhost:8000";
 
 // News websites to monitor
 const TRACKED_SITES = [

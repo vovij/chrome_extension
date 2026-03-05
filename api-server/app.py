@@ -47,7 +47,7 @@ app = FastAPI(title="SeenIt API", lifespan=lifespan)
 app.add_middleware(          # CORS Middleware
     CORSMiddleware,
     allow_origins=["*"],     # all origins allowed for now | REPLACE WITH ACTUAL ID ONCE READY TO DEPLOY
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -369,7 +369,9 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
     candidate_urls = [article.url] + [m.url for m in matches[:5]]
     cluster_id = min(candidate_urls) if candidate_urls else article.url
 
-    save_article(article, emb, user_id, cluster_id=cluster_id)
+
+    top_similarity = matches[0].similarity if matches else None
+    save_article(article, emb, user_id, cluster_id=cluster_id, similarity=top_similarity)
     # -----------------------------
     # CLUSTER CENTROID NOVELTY
     # -----------------------------
@@ -422,10 +424,14 @@ async def get_history(user: User = Depends(current_active_user)):
                 "articles": [],
                 "lastVisited": timestamp,
             }
-        else:
-            clusters[cid]["articles"].append({"title": title, "url": url, "similarity": similarity or 0})
-            if timestamp and timestamp > (clusters[cid]["lastVisited"] or ""):
-                clusters[cid]["lastVisited"] = timestamp
+        clusters[cid]["articles"].append({
+            "title": title, 
+            "url": url, 
+            "similarity": similarity or 0
+            })
+        
+        if timestamp and timestamp > (clusters[cid]["lastVisited"] or ""):
+            clusters[cid]["lastVisited"] = timestamp
 
     return {"clusters": clusters}
 
