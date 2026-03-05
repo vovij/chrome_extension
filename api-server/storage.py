@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS articles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     cluster_id TEXT,
+    similarity REAL,
     url TEXT,
     title TEXT,
     content TEXT,
@@ -67,8 +68,8 @@ conn.commit()
 def save_article(article, embedding: np.ndarray, user_id: str, cluster_id: str = None, similarity: float = None):
     cursor.execute("""
     INSERT OR IGNORE INTO articles
-    (user_id, url, title, content, domain, timestamp, embedding, cluster_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    (user_id, url, title, content, domain, timestamp, embedding, cluster_id, similarity)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id,
         article.url,

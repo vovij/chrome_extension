@@ -407,13 +407,13 @@ async def get_history(user: User = Depends(current_active_user)):
     from storage import cursor
     
     cursor.execute("""
-        SELECT cluster_id, title, url, timestamp
+        SELECT cluster_id, title, url, timestamp, similarity
         FROM articles WHERE user_id = ?
         ORDER BY timestamp DESC
     """, (str(user.id),))
 
     clusters = {}
-    for cluster_id, title, url, timestamp in cursor.fetchall():
+    for cluster_id, title, url, timestamp, similarity in cursor.fetchall():
         cid = cluster_id or url
         if cid not in clusters:
             clusters[cid] = {
@@ -423,11 +423,18 @@ async def get_history(user: User = Depends(current_active_user)):
                 "lastVisited": timestamp,
             }
         else:
-            clusters[cid]["articles"].append({"title": title, "url": url, "similarity": 0})
+            clusters[cid]["articles"].append({"title": title, "url": url, "similarity": similarity or 0})
             if timestamp and timestamp > (clusters[cid]["lastVisited"] or ""):
                 clusters[cid]["lastVisited"] = timestamp
 
     return {"clusters": clusters}
+
+@app.delete("/api/history")
+async def clear_history(user: User = Depends(current_active_user)):
+    from storage import cursor, conn
+    cursor.execute("DELETE FROM articles WHERE user_id = ?", (str(user.id),))
+    conn.commit()
+    return {"ok": True}
 
 @app.get("/")
 def health():
@@ -565,7 +572,8 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         candidate_urls = [article.url] + [m.url for m in matches[:5]]
         cluster_id = min(candidate_urls) if candidate_urls else article.url
 
-        save_article(article, emb, user_id, cluster_id=cluster_id)
+        top_similarity = matches[0].similarity if matches else None
+        save_article(article, emb, user_id, cluster_id=cluster_id, similarity=top_similarity)
         # -----------------------------
         # CLUSTER CENTROID NOVELTY (same as /article)
         # -----------------------------

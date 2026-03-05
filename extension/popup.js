@@ -60,10 +60,16 @@ function initializeApp() {
 
   const clearAllBtn = document.getElementById('clear-all');
   if (clearAllBtn) {
-    clearAllBtn.addEventListener('click', () => {
+    clearAllBtn.addEventListener('click', async () => {
       if (!confirm('Clear all tracked articles?')) return;
-      chrome.storage.local.set({ clusters: {} }, () => {
-        loadCurrent();
+
+      const { token } = await chrome.storage.local.get(['token']);
+      await fetch(`${API_BASE_URL}/history`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      chrome.storage.local.remove(['clusters', 'recentlyProcessed'], () => {
         loadClusters();
         loadStats();
       });
