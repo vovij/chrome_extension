@@ -424,12 +424,16 @@ async def get_history(user: User = Depends(current_active_user)):
                 "articles": [],
                 "lastVisited": timestamp,
             }
-        clusters[cid]["articles"].append({
-            "title": title, 
-            "url": url, 
-            "similarity": similarity or 0
+
+        row_url_norm = normalize_url(url)
+        rep_norm = normalize_url(cid)
+        if row_url_norm != rep_norm:
+            clusters[cid]["articles"].append({
+                "title": title,
+                "url": url,
+                "similarity": similarity or 0
             })
-        
+
         if timestamp and timestamp > (clusters[cid]["lastVisited"] or ""):
             clusters[cid]["lastVisited"] = timestamp
 
