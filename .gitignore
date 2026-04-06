@@ -69,3 +69,8 @@ backend/out_wcep_dataset_sft/
 # JSON/JSONL artifacts in backend output dirs
 backend/out_*/**.json
 backend/out_*/**.jsonl
+
+# Large model files
+*.safetensors
+*.bin
+backend/out_sft_minilm_L12/
