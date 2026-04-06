@@ -9,6 +9,7 @@ from storage import save_article, load_all, get_article_by_url, normalize_url
 from extract_content import extract_article_content
 from pydantic import BaseModel
 import time
+import asyncio
 import os, json
 from datetime import datetime, timezone
 import math
@@ -88,15 +89,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "detail": ". ".join(error_messages) if error_messages else "Validation error"
         }
     )
-# Allow cross-origin requests from the Chrome extension (chrome-extension://),
-# otherwise the browser blocks requests to the local FastAPI backend due to CORS:
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # ==================== AUTH ENDPOINTS ====================
 
@@ -252,14 +244,14 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
 
     # Check if this URL already exists
     article.url = normalize_url(article.url)
-    existing = get_article_by_url(article.url, user_id)  # Added user_id
+    existing = await asyncio.to_thread(get_article_by_url, article.url, user_id)
     if existing:
         print(f"===== URL ALREADY EXISTS FOR USER {user_id}: {article.url} =====")
         # Use existing embedding
         emb = existing['embedding']
         
         # Find matches (excluding self)
-        titles, urls, domains, timestamps, embs = load_all(user_id) # Added user_id
+        titles, urls, domains, timestamps, embs = await asyncio.to_thread(load_all, user_id) # Added user_id
         matches = []
 
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -297,7 +289,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         TOP_K = 5
         top_matches = matches[:TOP_K]
         reference_urls = [m.url for m in top_matches]
-        reference_embeddings = get_embeddings_by_urls(reference_urls)
+        reference_embeddings = await asyncio.to_thread(get_embeddings_by_urls, reference_urls)
 
         novelty = None
         if reference_embeddings:
@@ -326,7 +318,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
 
     emb = engine.embed(article.title, article.content)
 
-    titles, urls, domains, timestamps, embs = load_all(user_id)
+    titles, urls, domains, timestamps, embs = await asyncio.to_thread(load_all, user_id)
     matches = []
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -371,7 +363,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
 
 
     top_similarity = matches[0].similarity if matches else None
-    save_article(article, emb, user_id, cluster_id=cluster_id, similarity=top_similarity)
+    await asyncio.to_thread(save_article, article, emb, user_id, cluster_id=cluster_id, similarity=top_similarity)
     # -----------------------------
     # CLUSTER CENTROID NOVELTY
     # -----------------------------
@@ -380,7 +372,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
     top_matches = matches[:TOP_K]
 
     reference_urls = [m.url for m in top_matches]
-    reference_embeddings = get_embeddings_by_urls(reference_urls)
+    reference_embeddings = await asyncio.to_thread(get_embeddings_by_urls, reference_urls)
 
     novelty = None
 
@@ -407,26 +399,28 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
 @app.get("/api/history")
 async def get_history(user: User = Depends(current_active_user)):
     from storage import cursor
-    
-    cursor.execute("""
-        SELECT cluster_id, title, url, timestamp, similarity
-        FROM articles WHERE user_id = ?
-        ORDER BY timestamp ASC
-    """, (str(user.id),))
+
+    def _fetch():
+        cursor.execute("""
+            SELECT cluster_id, title, url, timestamp, similarity
+            FROM articles WHERE user_id = ?
+            ORDER BY timestamp ASC
+        """, (str(user.id),))
+        return cursor.fetchall()
+
+    rows = await asyncio.to_thread(_fetch)
 
     clusters = {}
-    for cluster_id, title, url, timestamp, similarity in cursor.fetchall():
+    for cluster_id, title, url, timestamp, similarity in rows:
         cid = cluster_id or url
         if cid not in clusters:
-            # Use the FIRST VISITED article's title as the representative, not the min URL's title
             clusters[cid] = {
                 "representativeTitle": title,
-                "representativeUrl": url,   # <-- actual visited URL, not cluster_id
+                "representativeUrl": url,
                 "articles": [],
                 "lastVisited": timestamp,
             }
         else:
-            # All subsequent articles in this cluster are bullets
             clusters[cid]["articles"].append({
                 "title": title,
                 "url": url,
@@ -436,7 +430,6 @@ async def get_history(user: User = Depends(current_active_user)):
         if timestamp and timestamp > (clusters[cid]["lastVisited"] or ""):
             clusters[cid]["lastVisited"] = timestamp
 
-    # Re-sort by lastVisited descending for the frontend
     clusters = dict(sorted(clusters.items(), key=lambda x: x[1]["lastVisited"] or "", reverse=True))
 
     return {"clusters": clusters}
@@ -444,8 +437,12 @@ async def get_history(user: User = Depends(current_active_user)):
 @app.delete("/api/history")
 async def clear_history(user: User = Depends(current_active_user)):
     from storage import cursor, conn
-    cursor.execute("DELETE FROM articles WHERE user_id = ?", (str(user.id),))
-    conn.commit()
+
+    def _delete():
+        cursor.execute("DELETE FROM articles WHERE user_id = ?", (str(user.id),))
+        conn.commit()
+
+    await asyncio.to_thread(_delete)
     return {"ok": True}
 
 @app.get("/")
@@ -470,14 +467,14 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         
         # Check if this URL already exists in database
         request.url = normalize_url(request.url)
-        existing = get_article_by_url(request.url, user_id)
+        existing = await asyncio.to_thread(get_article_by_url, request.url, user_id)
         if existing:
-            print(f"===== URL ALREADY EXISTS FOR USER {user_id}: {article.url} =====")
+            print(f"===== URL ALREADY EXISTS FOR USER {user_id}: {request.url} =====")
             # Use existing embedding
             emb = existing['embedding']
             
             # Find matches (excluding self)
-            titles, urls, domains, timestamps, embs = load_all(user_id)
+            titles, urls, domains, timestamps, embs = await asyncio.to_thread(load_all, user_id)
             matches = []
 
             now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -544,7 +541,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         # Process the article (same logic as /article endpoint)
         emb = engine.embed(article.title, article.content)
         
-        titles, urls, domains, timestamps, embs = load_all(user_id)
+        titles, urls, domains, timestamps, embs = await asyncio.to_thread(load_all, user_id)
         matches = []
 
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -585,7 +582,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         cluster_id = min(candidate_urls) if candidate_urls else article.url
 
         top_similarity = matches[0].similarity if matches else None
-        save_article(article, emb, user_id, cluster_id=cluster_id, similarity=top_similarity)
+        await asyncio.to_thread(save_article, article, emb, user_id, cluster_id=cluster_id, similarity=top_similarity)
         # -----------------------------
         # CLUSTER CENTROID NOVELTY (same as /article)
         # -----------------------------
@@ -593,7 +590,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         top_matches = matches[:TOP_K]
 
         reference_urls = [m.url for m in top_matches]
-        reference_embeddings = get_embeddings_by_urls(reference_urls)
+        reference_embeddings = await asyncio.to_thread(get_embeddings_by_urls, reference_urls)
 
         novelty = None
 
