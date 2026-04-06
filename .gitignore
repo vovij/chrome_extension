@@ -65,3 +65,7 @@ backend/out_posttrain_sft_minilm_L12/
 backend/out_sft_minilm_L12/
 backend/out_wcep_dataset/
 backend/out_wcep_dataset_sft/
+
+# JSON/JSONL artifacts in backend output dirs
+backend/out_*/**.json
+backend/out_*/**.jsonl
