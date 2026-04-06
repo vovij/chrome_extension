@@ -58,3 +58,10 @@ checkpoints/
 backend/WCEP/
 backend/out_wcep_posttrain/
 backend/out_posttrain_minilm/
+
+# SFT/post-training output dirs
+backend/out_posttrain_sft_minilm/
+backend/out_posttrain_sft_minilm_L12/
+backend/out_sft_minilm_L12/
+backend/out_wcep_dataset/
+backend/out_wcep_dataset_sft/
