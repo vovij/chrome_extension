@@ -411,23 +411,22 @@ async def get_history(user: User = Depends(current_active_user)):
     cursor.execute("""
         SELECT cluster_id, title, url, timestamp, similarity
         FROM articles WHERE user_id = ?
-        ORDER BY timestamp DESC
+        ORDER BY timestamp ASC
     """, (str(user.id),))
 
     clusters = {}
     for cluster_id, title, url, timestamp, similarity in cursor.fetchall():
         cid = cluster_id or url
         if cid not in clusters:
+            # Use the FIRST VISITED article's title as the representative, not the min URL's title
             clusters[cid] = {
                 "representativeTitle": title,
-                "representativeUrl": cid,
+                "representativeUrl": url,   # <-- actual visited URL, not cluster_id
                 "articles": [],
                 "lastVisited": timestamp,
             }
-
-        row_url_norm = normalize_url(url)
-        rep_norm = normalize_url(cid)
-        if row_url_norm != rep_norm:
+        else:
+            # All subsequent articles in this cluster are bullets
             clusters[cid]["articles"].append({
                 "title": title,
                 "url": url,
@@ -436,6 +435,9 @@ async def get_history(user: User = Depends(current_active_user)):
 
         if timestamp and timestamp > (clusters[cid]["lastVisited"] or ""):
             clusters[cid]["lastVisited"] = timestamp
+
+    # Re-sort by lastVisited descending for the frontend
+    clusters = dict(sorted(clusters.items(), key=lambda x: x[1]["lastVisited"] or "", reverse=True))
 
     return {"clusters": clusters}
 

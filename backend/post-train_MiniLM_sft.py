@@ -8,8 +8,8 @@ from utils import (
 
 CONFIG = {
     # Choose one of the two (hub vs local SFT)
-    "model_name": "sentence-transformers/all-MiniLM-L6-v2",
-    "model_dir":   "out_sft_minilm/encoder-sft-minilm",
+    "model_name": 'sentence-transformers/all-MiniLM-L12-v2', #"sentence-transformers/all-MiniLM-L6-v2",
+    "model_dir":   "out_sft_minilm_L12/encoder-sft-minilm", #"out_sft_minilm/encoder-sft-minilm"
 
     # Data
     "articles_train": "out_wcep_dataset_sft/articles.train.jsonl",
@@ -26,15 +26,15 @@ CONFIG = {
     "text_clip_chars": 2000,
 
     # Calibration
-    "target_precision": 0.95,
+    "target_precision": 0.98,
     "fix_tau_on_test": True,     # pick τ on val and apply to test
 
     # I/O
-    "outdir": "out_posttrain_sft_minilm",
+    "outdir": "out_posttrain_sft_minilm_L12", #"out_posttrain_sft_minilm"
     "save_pairs_with_E": True,
     "seed": 2026,
     "device": 'cuda',       
-    "batch_size_encode": 128
+    "batch_size_encode": 64
 }
 
 def main():
@@ -76,7 +76,7 @@ def main():
         embed_test = {"precision": best_te["precision"], "recall": best_te["recall"], "f1": best_te["f1"], "auc": None}
 
     # Fusion: choose training split
-    feature_cols = [c for c in ["U","T","Sh","E","domain_same","time_diff_days"] if c in df_tr.columns]
+    feature_cols = [c for c in ["T","Sh","E","time_diff_days"] if c in df_tr.columns]
     if C["fusion_train_split"] == "train":
         clf, best_logreg_va = train_logreg(df_tr, df_va, feature_cols, C["target_precision"])
     else:  # "val": train on val, choose τ on val as well

@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 from io import BytesIO
 import imagehash
+from scrape_helper import *
 
 # =========================
 # Config
@@ -87,52 +88,90 @@ def parse_jsonld_images(soup):
             continue
     return imgs
 
-def extract_lead_image_url(page_url):
-    headers = {"User-Agent": USER_AGENT}
-    r = requests.get(page_url, headers=headers, timeout=TIMEOUT)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
+def extract_lead_image_url(page_url, html_text=None, session=None, timeout=12, ua="SeenItBot/0.1", domain_blocklist=None):
+    import requests
+    session = session or requests.Session()
+    headers = {"User-Agent": ua}
+    if html_text is None:
+        r = session.get(page_url, headers=headers, timeout=timeout)
+        r.raise_for_status()
+        html_text = r.text
+    soup = BeautifulSoup(html_text, "html.parser")
 
-    # og:image / twitter:image
-    for prop in ["og:image", "twitter:image"]:
+    # Collect candidates
+    candidates = []
+    org_logos = set()
+
+    # OG/Twitter
+    for prop in ["og:image","og:image:url","twitter:image"]:
         tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
         if tag and tag.get("content"):
             u = resolve(page_url, tag["content"])
-            if u:
-                return u
+            if u: candidates.append({"url": u, "source": "meta_og", "alt":"", "classes":[]})
 
-    # JSON-LD NewsArticle.image
-    jsonld_imgs = parse_jsonld_images(soup)
-    for u in jsonld_imgs:
-        uu = resolve(page_url, u)
-        if uu:
-            return uu
+    # JSON-LD
+    jsonld_cands, org_logos = parse_jsonld_images(soup, page_url)
+    candidates += jsonld_cands
 
-    # <article> img
-    art = soup.find("article")
-    if art:
-        img = art.find("img")
-        if img:
-            if img.get("srcset"):
-                src = best_src_from_srcset(img["srcset"]) or img.get("src")
-            else:
-                src = img.get("src")
-            uu = resolve(page_url, src)
-            if uu:
-                return uu
+    # Article/main
+    candidates += gather_article_scope_images(soup, page_url)
 
     # Fallback: first <img>
-    img = soup.find("img")
-    if img:
-        if img.get("srcset"):
-            src = best_src_from_srcset(img["srcset"]) or img.get("src")
-        else:
-            src = img.get("src")
-        uu = resolve(page_url, src)
-        if uu:
-            return uu
+    if not candidates:
+        img = soup.find("img")
+        if img:
+            src = best_src_from_srcset(img.get("srcset","")) or img.get("src")
+            u = resolve(page_url, src)
+            if u: candidates.append({"url": u, "source": "fallback_img", "alt": img.get("alt") or "", "classes": img.get("class") or []})
 
-    return None
+    if not candidates:
+        return None
+
+    # Domain-level blocklist (paths/patterns or pHashes you accumulated)
+    domain = urllib.parse.urlparse(page_url).hostname or ""
+    blocked_urls = set()
+    if domain_blocklist:
+        blocked_urls |= set(domain_blocklist.get(domain, []))
+
+    # Score and pick best
+    best_score, best = -1.0, None
+    for c in candidates:
+        url = c["url"]; alt = c.get("alt",""); classes = c.get("classes",[])
+        if url in org_logos:                 # explicitly skip publisher logos
+            continue
+        if url in blocked_urls:              # known domain-level blocked image
+            continue
+        # Hard keyword filter
+        if is_logo_like(url, alt, classes):
+            continue
+        # Base score by source
+        src = c.get("source","")
+        if src == "meta_og":
+            score = 0.6   # lower than before; OG can be a default social-card
+        elif src == "jsonld_article":
+            score = 0.7
+        elif src == "jsonld_primary":
+            score = 0.5   # often default primary
+        elif src == "article_figure":
+            score = 0.75  # figure with caption tends to be lead photo
+            if c.get("has_caption"): score += 0.1
+        elif src == "article_dom":
+            score = 0.65 + (0.1 if any(cls in HERO_CLASSES for cls in classes) else 0.0)
+        else:
+            score = 0.3
+        # Size/aspect hints from attributes
+        w = c.get("width_attr"); h = c.get("height_attr")
+        score += size_hint_score(w, h)
+        score += aspect_ratio_score(w, h)
+
+        # Penalize suspicious square OG (1:1) explicitly
+        if src in ("meta_og","jsonld_primary") and (w and h and abs(w - h) < 10):
+            score -= 0.3
+
+        if score > best_score:
+            best_score, best = score, c
+
+    return best["url"] if best else None
 
 def fetch_and_validate_image(img_url):
     headers = {"User-Agent": USER_AGENT}

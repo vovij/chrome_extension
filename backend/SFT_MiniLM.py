@@ -20,13 +20,13 @@ CONFIG = {
     "SFT_PAIRS_TRAIN":"out_wcep_dataset/sft_pairs.train.jsonl",  # positives only
     "VAL_PAIRS":      "out_wcep_dataset/pairs.val.jsonl",        # for eval
     "TEST_PAIRS":     "out_wcep_dataset/pairs.test.jsonl",       # for eval
-    "OUT_DIR":        "out_sft_minilm",
+    "OUT_DIR":        "out_sft_minilm_L12",
 
     # Model & training
-    "MODEL_NAME": "sentence-transformers/all-MiniLM-L6-v2",
+    "MODEL_NAME": 'sentence-transformers/all-MiniLM-L12-v2', #"sentence-transformers/all-MiniLM-L6-v2",
     "DEVICE": 'cuda',               # None -> auto; or "cuda"/"cpu"
     "MAX_SEQ_LEN": 256,           # cap tokens (title+lede recommended)
-    "BATCH_SIZE": 128,            # fits RTX 3080 8GB for MiniLM; reduce if OOM
+    "BATCH_SIZE": 64,            #128 reduce if OOM
     "EPOCHS": 2,
     "USE_AMP": True,              # mixed precision for speed/memory
     "SEED": 2026,
@@ -37,7 +37,7 @@ CONFIG = {
     "TEXT_CLIP_CHARS": 2000,        # for title+text_clip
 
     # Eval: pick threshold to hit target precision, then report recall/F1
-    "TARGET_PRECISION": 0.95
+    "TARGET_PRECISION": 0.98
 }
 
 
