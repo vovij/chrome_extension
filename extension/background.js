@@ -1,7 +1,7 @@
 // background.js — SeenIt (MV3)
 // SPA-safe, saves to chrome.storage.local.clusters for popup
 
-const API_BASE_URL = "https://seenit.doc.ic.ac.uk";
+const API_BASE_URL = "https://seenit.doc.ic.ac.uk/";
 
 // News websites to monitor
 const TRACKED_SITES = [
@@ -84,9 +84,39 @@ async function extractArticle(tabId) {
         document.title?.trim() ||
         "Untitled";
 
-      const articleEl = document.querySelector("article");
-      const mainEl = document.querySelector('[role="main"]');
-      const node = articleEl || mainEl || document.body;
+      // Try selectors from most specific to broadest
+      const selectors = [
+        "article",
+        "main article",
+        "[itemprop='articleBody']",
+        ".article__body",
+        ".story-body__inner",
+        ".article-body",
+        ".post-content",
+        ".entry-content",
+        "[data-component='article-body']",
+        "main",
+      ];
+      let node = null;
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = (el.innerText || "").replace(/\s+/g, " ").trim();
+          if (text.length >= 100) {
+            node = el;
+            break;
+          }
+        }
+      }
+      if (!node) node = document.body;
+
+      // If body is all we have and it's huge, let server handle it
+      if (node === document.body) {
+        const bodyText = (node.innerText || "").replace(/\s+/g, " ").trim();
+        if (bodyText.length > 8000) {
+          node = null;
+        }
+      }
 
       let content = "";
       if (node) {
@@ -96,8 +126,7 @@ async function extractArticle(tabId) {
           .slice(0, 4000);
       }
 
-      // NEW: count links inside main/article (category pages usually have many)
-      const container = articleEl || mainEl || document.body;
+      const container = node;
       const linkCount = container ? container.querySelectorAll("a").length : 0;
 
       return { title, content, linkCount };

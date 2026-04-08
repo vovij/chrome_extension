@@ -105,6 +105,21 @@ def get_article_by_url(url: str, user_id: str) -> Optional[dict]:
     }
 
 
+def get_content_by_urls(urls: list) -> dict:
+    """Returns {url: (title, content)} for the given URLs."""
+    if not urls:
+        return {}
+    result = {}
+    for url in urls:
+        cursor.execute(
+            "SELECT title, content FROM articles WHERE url = ?", (url,)
+        )
+        row = cursor.fetchone()
+        if row:
+            result[url] = (row[0], row[1])
+    return result
+
+
 def load_all(user_id: str):
     cursor.execute(
         "SELECT title, url, domain, timestamp, embedding FROM articles WHERE user_id = ?",

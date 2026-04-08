@@ -33,7 +33,7 @@ class SimpleHTMLParser(HTMLParser):
     def __init__(self):
         super().__init__()
         self.text_parts = []
-        self.skip_tags = {'script', 'style', 'nav', 'header', 'footer', 'aside', 'noscript'}
+        self.skip_tags = {'script', 'style', 'nav', 'header', 'footer', 'aside', 'noscript', 'form', 'button', 'iframe'}
         self.current_tag = None
         
     def handle_starttag(self, tag, attrs):
@@ -91,7 +91,7 @@ def extract_with_trafilatura(html_content: str, url: str) -> Optional[Dict[str, 
             html_content,
             include_comments=False,
             include_tables=False,
-            favor_precision=True  # MODIFIED TO REDUCE FP
+            favor_recall=False
         )
 
         if extracted:
@@ -107,65 +107,36 @@ def extract_with_trafilatura(html_content: str, url: str) -> Optional[Dict[str, 
 
     return None
 
-
 def extract_with_simple_parser(html_content: str, url: str) -> Dict[str, str]:
-    """Fallback: scoped parsing using <article>/<main> + paragraph extraction."""
-    from bs4 import BeautifulSoup
+    """Fallback: Simple HTML parsing"""
 
-    soup = BeautifulSoup(html_content, "lxml")
+    # Try to restrict to <article> or <main> blocks first (reduces sidebars a lot)
+    article_match = re.search(r"<article[^>]*>(.*?)</article>", html_content, re.IGNORECASE | re.DOTALL)
+    main_match = re.search(r"<main[^>]*>(.*?)</main>", html_content, re.IGNORECASE | re.DOTALL)
 
-    # 1) Remove obvious non-article regions anywhere
-    junk_selectors = [
-        "nav", "header", "footer", "aside", "script", "style", "noscript",
-        # common sidebar/promo patterns
-        "[class*='related']", "[id*='related']",
-        "[class*='promo']", "[id*='promo']",
-        "[class*='recommend']", "[id*='recommend']",
-        "[class*='newsletter']", "[id*='newsletter']",
-        "[class*='subscribe']", "[id*='subscribe']",
-        "[class*='advert']", "[id*='advert']",
-        "[class*='cookie']", "[id*='cookie']",
-        "[class*='share']", "[id*='share']",
-        "[class*='social']", "[id*='social']",
-        "[class*='most-read']", "[id*='most-read']",
-        "[class*='trending']", "[id*='trending']",
-    ]
-    for sel in junk_selectors:
-        for node in soup.select(sel):
-            node.decompose()
+    scoped_html = None
+    if article_match:
+        scoped_html = article_match.group(1)
+    elif main_match:
+        scoped_html = main_match.group(1)
 
-    # 2) Choose the main container
-    container = soup.select_one("article") or soup.select_one("main") or soup.body or soup
-
-    # 3) Pull text only from content-ish tags (skip lists/menus)
-    chunks = []
-    for el in container.find_all(["h1", "h2", "h3", "p"], recursive=True):
-        t = el.get_text(" ", strip=True)
-        if not t:
-            continue
-
-        # Heuristics to drop junky lines
-        if len(t) < 30:
-            continue
-        low = t.lower()
-        if any(k in low for k in [
-            "sign up", "subscribe", "newsletter", "related", "recommended",
-            "most read", "advert", "cookie", "privacy", "terms",
-            "share this", "follow us"
-        ]):
-            continue
-
-        chunks.append(t)
-
-    text = " ".join(chunks)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    # Title: prefer <title> but clean
-    title_tag = soup.find("title")
-    title = title_tag.get_text(strip=True) if title_tag else ""
-    title = title.replace(" - BBC News", "").replace(" - Reuters", "").strip()
-
-    return {"title": title or "Untitled", "text": text[:MAX_CHAR_LENGTH]}
+    parser = SimpleHTMLParser()
+    parser.feed(scoped_html if scoped_html else html_content)
+    text = parser.get_text()
+    
+    # Try to extract title from HTML
+    title_match = re.search(r'<title[^>]*>(.*?)</title>', html_content, re.IGNORECASE | re.DOTALL)
+    title = title_match.group(1).strip() if title_match else ''
+    
+    # Clean title (remove HTML entities and extra whitespace)
+    title = re.sub(r'&[^;]+;', '', title)
+    title = re.sub(r'\s+', ' ', title)
+    title = title.replace(' - BBC News', '').replace(' - Reuters', '').strip()
+    
+    return {
+        'title': title or 'Untitled',
+        'text': text
+    }
 
 
 def extract_article_content(url: str, html_content: Optional[str] = None, 
@@ -202,18 +173,19 @@ def extract_article_content(url: str, html_content: Optional[str] = None,
             print(f"Failed to fetch URL {url}: {e}")
             return result
     
-    # Try extraction methods in order of preference
+    # Extraction cascade: most sophisticated → least sophisticated.
+    # Order must be preserved: each method is tried only if the previous one fails.
     extracted = None
-    
-    # Method 1: Trafilatura (best for news articles)
+
+    # 1. Trafilatura – purpose-built for news/article extraction (best)
     if TRAFILATURA_AVAILABLE:
         extracted = extract_with_trafilatura(html_content, url)
-    
-    # Method 2: Readability
+
+    # 2. Readability – Mozilla's content extraction (good fallback)
     if not extracted and READABILITY_AVAILABLE:
         extracted = extract_with_readability(html_content, url)
-    
-    # Method 3: Simple parser (fallback)
+
+    # 3. Simple parser – basic tag stripping, no content detection (last resort)
     if not extracted:
         extracted = extract_with_simple_parser(html_content, url)
     

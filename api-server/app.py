@@ -5,12 +5,15 @@ from fastapi.exceptions import RequestValidationError
 from models import ArticleInput, ArticleResponse, SimilarArticle
 from engine import EmbeddingEngine
 from contextlib import asynccontextmanager
-from storage import save_article, load_all, get_article_by_url, normalize_url
+from storage import save_article, load_all, get_article_by_url, normalize_url, get_embeddings_by_urls, get_content_by_urls
+from whats_new import compute_whats_new
+from llm_summarizer import summarize_whats_new
 from extract_content import extract_article_content
 from pydantic import BaseModel
 import time
 import asyncio
 import os, json
+from typing import Optional
 from datetime import datetime, timezone
 import math
 from dotenv import load_dotenv
@@ -201,6 +204,52 @@ def _time_diff_days(ts_iso: str, now_iso: str) -> float:
     except Exception:
         return 0.0
 
+
+def _compute_novelty_details(
+    current_title: str, current_content: str, reference_urls: list, novelty_score: Optional[float]
+) -> Optional[dict]:
+    """
+    Compute what's new (entities, numbers) when we have similar articles.
+    Especially useful when novelty is low (mostly repeated content).
+    """
+    if not reference_urls or novelty_score is None:
+        return None
+    try:
+        ref_contents = get_content_by_urls(reference_urls)
+        if not ref_contents:
+            return None
+        result = compute_whats_new(current_title, current_content, ref_contents)
+
+        # Optionally refine the summary with FLAN-T5 using the most informative sentences
+        sentences = result.get("sentences") or []
+
+        # Option B: if no new-entity sentences found, fall back to first sentences
+        # of the current article so the LLM always has something to summarize
+        if not sentences and current_content:
+            from whats_new import _split_sentences
+            sentences = _split_sentences(current_content)[:5]
+            print("[SeenIt] no new-entity sentences found, falling back to article lede for LLM")
+
+        if sentences:
+            try:
+                print(f"[SeenIt] calling summarize_whats_new with {len(sentences)} sentences")
+                llm_summary = summarize_whats_new(sentences)
+                if llm_summary:
+                    result["summary"] = llm_summary
+                    print(f"[SeenIt] LLM summary: {llm_summary[:100]}")
+            except Exception as e:
+                print(f"[SeenIt] LLM summary error: {e}")
+
+        # Do not expose raw sentence list in the API response
+        result.pop("sentences", None)
+
+        if result["new_entities"] or result["new_numbers"] or result.get("summary"):
+            return result
+    except Exception as e:
+        print(f"[SeenIt] whats_new error: {e}")
+    return None
+
+
 def _logreg_accept(E: float, domain_same: float, time_diff_days: float) -> bool:
     """
     Uses post-train logistic regression if available.
@@ -289,12 +338,17 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         TOP_K = 5
         top_matches = matches[:TOP_K]
         reference_urls = [m.url for m in top_matches]
+        print(f"[SeenIt] reference_urls: {reference_urls}")
         reference_embeddings = await asyncio.to_thread(get_embeddings_by_urls, reference_urls)
+        print(f"[SeenIt] reference_embeddings count: {len(reference_embeddings)}")
 
         novelty = None
+        novelty_details = None
+
         if reference_embeddings:
             centroid = compute_centroid(reference_embeddings)
             novelty_score = compute_novelty_score(emb, centroid)
+            print(f"[SeenIt] novelty_score: {novelty_score}")
             novelty = {
                 "novelty_score": round(novelty_score, 3),
                 "interpretation": (
@@ -303,12 +357,20 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
                     else "mostly repeated"
                 )
             }
+            novelty_details = _compute_novelty_details(
+            article.title, article.content, reference_urls, novelty_score
+            )  # use existing.title/content for the already-exists branch
+            print(f"[SeenIt] novelty_details: {novelty_details}")
+        else:
+            print("[SeenIt] no reference_embeddings — novelty skipped")
+
         
         return {
             "similar_found": len(matches) > 0,
             "cluster_id": cluster_id,
             "matches": matches[:5],
-            "novelty": novelty
+            "novelty": novelty,
+            "novelty_details": novelty_details
         }
 
     print("===== TEXT TO EMBED =====")
@@ -375,6 +437,7 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
     reference_embeddings = await asyncio.to_thread(get_embeddings_by_urls, reference_urls)
 
     novelty = None
+    novelty_details = None
 
     if reference_embeddings:
         centroid = compute_centroid(reference_embeddings)
@@ -393,7 +456,8 @@ async def process_article(article: ArticleInput, user: User = Depends(current_ac
         "similar_found": len(matches) > 0,
         "cluster_id": cluster_id,
         "matches": matches[:5],
-        "novelty": novelty
+        "novelty": novelty,
+        "novelty_details": novelty_details
     }
 
 @app.get("/api/history")
@@ -593,6 +657,7 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
         reference_embeddings = await asyncio.to_thread(get_embeddings_by_urls, reference_urls)
 
         novelty = None
+        novelty_details = None
 
         if reference_embeddings:
             centroid = compute_centroid(reference_embeddings)
@@ -606,12 +671,16 @@ async def extract_and_process_url(request: URLRequest, user: User = Depends(curr
                     else "mostly repeated"
                 )
             }
+            novelty_details = _compute_novelty_details(
+                article.title, article.content, reference_urls, novelty_score
+            )
 
         return {
             "similar_found": len(matches) > 0,
             "cluster_id": cluster_id,
             "matches": matches[:5],
             "novelty": novelty,
+            "novelty_details": novelty_details,
             "extracted_article": { 
                 "title": article.title,
                 "domain": article.domain,

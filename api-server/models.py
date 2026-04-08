@@ -27,3 +27,5 @@ class ArticleResponse(BaseModel):
     matches: List[SimilarArticle]
     extracted_article: Optional[Dict[str, Any]] = None
     novelty: Optional[NoveltyReport] = None
+    novelty_details: Optional[dict] = None
+

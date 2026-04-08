@@ -16,7 +16,7 @@ function showBanner(matches, novelty, details) {
 
   // ---------- Novelty percentage (with fallback) ----------
   let noveltyHtml = "";
-  let whatsNewPlaceholder = "";
+  let whatsNewHtml = "";
     
   if (hasMatches) {
     if (novelty && typeof novelty.novelty_score === "number") {
@@ -33,31 +33,41 @@ function showBanner(matches, novelty, details) {
         </div>
       `;
     }
-
-   // --- NEW placeholder line ---
-  whatsNewPlaceholder = `
-    <div style="margin-top:6px;font-size:12px;color:#a7f3d0">
-      <b>Here’s what’s likely new:</b> <span style="opacity:0.8">(coming soon…)</span>
-    </div>
-  `;
-      
   }
 
-  // ---------- Novelty details (safe even if backend doesn't send it yet) ----------
+  // ---------- Novelty details: prefer summary paragraph, fallback to bullet list ----------
+  const summary = (details && typeof details.summary === "string") ? details.summary.trim() : "";
   const newEntities = (details && Array.isArray(details.new_entities)) ? details.new_entities : [];
   const newNumbers  = (details && Array.isArray(details.new_numbers)) ? details.new_numbers : [];
 
-  let whatsNewHtml = "";
-  if (newEntities.length || newNumbers.length) {
+  if (summary) {
+    whatsNewHtml = `
+      <div style="margin-top:8px;font-size:12px;color:#a7f3d0">
+        <div style="font-weight:600;margin-bottom:4px">Here's what's likely new:</div>
+        <div id="seenit-summary" style="line-height:1.4;opacity:0.95;max-height:120px;overflow:hidden;transition:max-height 0.2s ease">
+          ${escapeHtml(summary)}
+        </div>
+        <div id="seenit-expand" style="margin-top:4px;font-size:11px;cursor:pointer;text-decoration:underline;opacity:0.9">
+          Expand ▼
+        </div>
+      </div>
+    `;
+  } else if (newEntities.length || newNumbers.length) {
     const items = [
-      ...newEntities.map(e => `Mentions "${e}"`),
-      ...newNumbers.map(n => `Adds figure "${n}"`)
-    ].slice(0, 3);
+      ...newEntities.map(e => `Mentions "${escapeHtml(e)}"`),
+      ...newNumbers.map(n => `Adds figure "${escapeHtml(n)}"`)
+    ];
 
     whatsNewHtml = `
       <div style="margin-top:8px;font-size:12px;color:#a7f3d0">
         <div style="font-weight:600;margin-bottom:4px">What's likely new:</div>
         ${items.map(i => `<div>• ${i}</div>`).join("")}
+      </div>
+    `;
+  } else if (hasMatches && novelty && novelty.novelty_score <= 0.3) {
+    whatsNewHtml = `
+      <div style="margin-top:6px;font-size:12px;color:#a7f3d0;opacity:0.9">
+        <b>What's likely new:</b> No new entities or figures detected (content appears mostly repeated).
       </div>
     `;
   }
@@ -74,7 +84,7 @@ function showBanner(matches, novelty, details) {
     </div>
 
     ${noveltyHtml}
-    ${whatsNewPlaceholder}
+    ${whatsNewHtml}
 
     ${hasMatches ? `
       <div style="margin-top:6px">
@@ -84,8 +94,8 @@ function showBanner(matches, novelty, details) {
       </div>
     ` : ""}
 
-    <div id="seenit-hide" style="margin-top:8px;font-size:12px;cursor:pointer;text-decoration:underline">
-      Hide
+    <div style="margin-top:8px;font-size:12px;display:flex;gap:12px">
+      <span id="seenit-hide" style="cursor:pointer;text-decoration:underline">Hide</span>
     </div>
   `;
 
@@ -93,7 +103,9 @@ function showBanner(matches, novelty, details) {
     position: fixed;
     top: 16px;
     right: 16px;
-    width: 280px;
+    width: 500px;
+    max-height: 85vh;
+    overflow-y: auto;
     z-index: 999999;
     background: #111827;
     color: white;
@@ -106,9 +118,26 @@ function showBanner(matches, novelty, details) {
   banner.querySelector("#seenit-hide").onclick = () => banner.remove();
 
   document.body.appendChild(banner);
+
+  const expandBtn = banner.querySelector("#seenit-expand");
+  const summaryEl = banner.querySelector("#seenit-summary");
+  if (expandBtn && summaryEl) {
+    const checkOverflow = () => {
+      const overflows = summaryEl.scrollHeight > summaryEl.clientHeight;
+      expandBtn.style.display = overflows ? "block" : "none";
+    };
+    requestAnimationFrame(checkOverflow);
+    let expanded = false;
+    expandBtn.onclick = () => {
+      expanded = !expanded;
+      summaryEl.style.maxHeight = expanded ? "none" : "120px";
+      summaryEl.style.overflow = expanded ? "visible" : "hidden";
+      expandBtn.textContent = expanded ? "Collapse ▲" : "Expand ▼";
+    };
+  }
 }
 
-// prevent HTML injection in titles
+// small helper to prevent HTML injection in titles
 function escapeHtml(str) {
   return String(str)
     .replaceAll("&", "&amp;")
