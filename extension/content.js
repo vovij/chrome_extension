@@ -14,7 +14,7 @@ function showBanner(matches, novelty, details) {
 
   const hasMatches = Array.isArray(matches) && matches.length > 0;
 
-  // ---------- Novelty percentage (with fallback) ----------
+  //  Novelty percentage (with fallback)
   let noveltyHtml = "";
   let whatsNewHtml = "";
     
@@ -35,7 +35,7 @@ function showBanner(matches, novelty, details) {
     }
   }
 
-  // ---------- Novelty details: prefer summary paragraph, fallback to bullet list ----------
+  //  Novelty details: prefer summary paragraph, fallback to bullet list
   const summary = (details && typeof details.summary === "string") ? details.summary.trim() : "";
   const newEntities = (details && Array.isArray(details.new_entities)) ? details.new_entities : [];
   const newNumbers  = (details && Array.isArray(details.new_numbers)) ? details.new_numbers : [];
@@ -72,7 +72,7 @@ function showBanner(matches, novelty, details) {
     `;
   }
 
-  // ---------- Banner HTML ----------
+  // Banner HTML
   banner.innerHTML = `
     <div style="font-weight:600">👀 SeenIt</div>
 

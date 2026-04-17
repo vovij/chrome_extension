@@ -1,5 +1,5 @@
 // SeenIt Popup — auth + CURRENT page + LIST of clusters (similar articles)
-const API_BASE_URL = 'https://seenit.doc.ic.ac.uk/api';
+const API_BASE_URL = "https://seenit.doc.ic.ac.uk/api";
 
 const TRACKED_SITES = [
   "bbc.co.uk",
@@ -150,20 +150,19 @@ async function handleLogin() {
     } else {
       // Better error messages for login
       let errorMessage = 'Login failed';
-      
+
       if (data.detail) {
-        if (typeof data.detail === 'string') {
-          // Map technical error codes to user-friendly messages
-          if (data.detail === 'LOGIN_BAD_CREDENTIALS') {
-            errorMessage = 'Invalid email or password';
-          } else if (data.detail === 'LOGIN_USER_NOT_VERIFIED') {
-            errorMessage = 'Email not verified. Please check your inbox.';
-          } else {
-            errorMessage = data.detail;
+          if (typeof data.detail === 'string') {
+              if (data.detail === 'LOGIN_BAD_CREDENTIALS') {
+                  errorMessage = 'Invalid email or password';
+              } else if (data.detail === 'LOGIN_USER_NOT_VERIFIED') {
+                  errorMessage = 'Please verify your email first. Check your inbox.';
+              } else {
+                  errorMessage = data.detail;
+              }
           }
-        }
       }
-      
+
       showAuthError(errorMessage);
     }
   } catch (error) {
@@ -202,8 +201,9 @@ async function handleRegister() {
     
     const data = await response.json();
     
-    if (response.ok) {
-      showAuthSuccess('Registration successful! Please login.');
+        if (response.ok) {
+        showAuthSuccess('Registration successful! Please check your email to verify your account.');
+        
       // Switch to login form
       setTimeout(() => {
         document.getElementById('register-form').style.display = 'none';
@@ -290,7 +290,7 @@ function clearAuthMessages() {
   document.getElementById('auth-success').classList.remove('show');
 }
 
-// ---------------- Utils ----------------
+// Utils 
 
 function isTrackedSite(url) {
   try {
@@ -345,16 +345,16 @@ function escapeHtml(s) {
 
 // Find cluster which contains url
 function findClusterForUrl(clustersObj, url) {
+  const norm = normalizeUrl(url);
   const clusters = Object.values(clustersObj || {});
   return (
-    clusters.find((c) => c.currentUrl === url) ||
-    clusters.find((c) => (c.articles || []).some((a) => a.url === url)) ||
+    clusters.find((c) => (c.articles || []).some((a) => normalizeUrl(a.url || "") === norm)) ||
     null
   );
 }
 
 
-// ---------------- Tabs ----------------
+// Tabs
 
 function setupTabs() {
   document.querySelectorAll(".tab").forEach((tab) => {
@@ -372,7 +372,7 @@ function setupTabs() {
   });
 }
 
-// ---------------- Current ----------------
+// Current
 
 function loadCurrent() {
   const titleEl = document.querySelector("#page-info .page-title");
@@ -401,9 +401,8 @@ function loadCurrent() {
       trackingEl.style.display = "none";
     }
 
-    chrome.storage.local.get(["clusters"], (res) => {
-      const clusters = res.clusters || {};
-      const cluster = findClusterForUrl(clusters, tab.url);
+    fetchClusters().then((clusters) => {
+      const cluster = findClusterForUrl(clusters || {}, tab.url);
 
       if (!cluster) {
         matchesEl.innerHTML = `
@@ -414,7 +413,11 @@ function loadCurrent() {
         return;
       }
 
-      const others = (cluster.articles || []).filter((a) => a.url !== tab.url);
+      const currentNorm = normalizeUrl(tab.url);
+
+      const others = (cluster.articles || []).filter((a) => {
+        return a?.url && normalizeUrl(a.url) !== currentNorm;
+      });
 
       if (others.length === 0) {
         matchesEl.innerHTML = `
@@ -426,9 +429,6 @@ function loadCurrent() {
         return;
       }
 
-      // sort by similarity desc
-      others.sort((a, b) => (b.similarity || 0) - (a.similarity || 0));
-
       matchesEl.innerHTML = `
         <div class="list-item">
           <div style="font-weight:600;margin-bottom:6px">Similar articles</div>
@@ -438,9 +438,6 @@ function loadCurrent() {
                 (a) => `
               <li style="font-size:13px;margin-bottom:6px">
                 <a href="${escapeHtml(a.url)}" target="_blank">${escapeHtml(a.title)}</a>
-                <span style="color:#6b7280;font-size:11px">
-                  (${(((a.similarity || 0) * 100)).toFixed(0)}%)
-                </span>
               </li>`
               )
               .join("")}
@@ -450,11 +447,13 @@ function loadCurrent() {
           </div>
         </div>
       `;
+    }).catch(() => {
+      matchesEl.innerHTML = `<p style="color:#ef4444;margin-top:6px;font-size:13px">Error loading current article history</p>`;
     });
   });
 }
 
-// ---------------- List ----------------
+// List
 
 async function fetchClusters() {
   const { token } = await chrome.storage.local.get(["token"]);
@@ -464,6 +463,7 @@ async function fetchClusters() {
   if (!res.ok) throw new Error("Failed to fetch history");
   return (await res.json()).clusters;
 }
+
 
 async function loadClusters() {
   const container = document.getElementById("seen-list");
@@ -491,13 +491,7 @@ async function loadClusters() {
         <ul style="padding-left:16px;margin:0">
           ${(cluster.articles || [])
             .filter((a) => {
-              if (!a?.url) return false;
-              const aNorm = normalizeUrl(a.url);
-              const repNorm = normalizeUrl(cluster.representativeUrl || "");
-              const curNorm = normalizeUrl(cluster.currentUrl || "");
-              if (repNorm && aNorm === repNorm) return false;
-              if (curNorm && aNorm === curNorm) return false;
-              return true;
+              return !!a?.url;
             })
             .slice()
             .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
@@ -526,7 +520,7 @@ async function loadClusters() {
   }
 }
 
-// ---------------- Stats ----------------
+// Stats
 
 async function loadStats() {
   try {

@@ -4,8 +4,6 @@ from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = os.getenv("SEENIT_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
-# To run the backend for a particular model, use:
-# SEENIT_MODEL="your_model_name" uvicorn app:app --reload --port 8000
 
 class EmbeddingEngine:
     def __init__(self):
