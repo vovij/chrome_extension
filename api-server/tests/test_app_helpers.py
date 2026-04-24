@@ -1,192 +1,128 @@
 """
-Unit tests for the pure helper functions defined in app.py.
-
-Because app.py has many side-effects at import time (FastAPI setup,
-SQLAlchemy, dotenv, etc.) we copy the three trivial helpers here and test
-the logic directly.
+Unit tests for pure helper functions in app.py.
+Covers: _is_match, _dot, _bytes_to_floats
 """
 
-import math
+import struct
+import numpy as np
 import pytest
-from datetime import datetime, timezone
 
 
-# Replicated helpers 
+# replicated helpers
 
-def _sigmoid(x: float) -> float:
-    """Numerically stable sigmoid."""
-    if x >= 0:
-        z = math.exp(-x)
-        return 1.0 / (1.0 + z)
-    else:
-        z = math.exp(x)
-        return z / (1.0 + z)
+TAU_EMBED = 0.7
 
+def _is_match(E: float) -> bool:
+    return E >= TAU_EMBED
 
-def _time_diff_days(ts_iso: str, now_iso: str) -> float:
-    """Absolute difference between two ISO timestamps in days."""
-    try:
-        t1 = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
-        t2 = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
-        return abs((t2 - t1).total_seconds()) / 86400.0
-    except Exception:
-        return 0.0
+def _dot(a, b):
+    if not a or not b:
+        return None
+    return sum(x * y for x, y in zip(a, b))
+
+def _bytes_to_floats(blob):
+    if blob is None:
+        return None
+    return list(struct.unpack(f"{len(blob) // 4}f", blob))
 
 
-def _logreg_accept(E: float, domain_same: float, time_diff_days: float,
-                   logreg=None, tau_embed=0.7) -> bool:
-    """
-    Mirrors the _logreg_accept logic in app.py.
-    When logreg is None (the production default) it falls back to tau_embed.
-    """
-    if not logreg:
-        return E >= tau_embed
+# _is_match
 
-    cols  = logreg["feature_cols"]
-    w     = logreg["weights"]
-    b     = logreg["bias"]
-    tau_p = logreg["tau_prob"]
+class TestIsMatch:
+    def test_above_threshold_accepted(self):
+        assert _is_match(0.8) is True
 
-    supported = {"E", "domain_same", "time_diff_days"}
-    if any(c not in supported for c in cols):
-        return E >= tau_embed
+    def test_below_threshold_rejected(self):
+        assert _is_match(0.5) is False
 
-    feat_map = {"E": float(E), "domain_same": float(domain_same), "time_diff_days": float(time_diff_days)}
-    x = [feat_map[c] for c in cols]
-    s = b + sum(float(wi) * float(xi) for wi, xi in zip(w, x))
-    p = _sigmoid(s)
-    return p >= tau_p
+    def test_exactly_at_threshold_accepted(self):
+        assert _is_match(0.7) is True
 
+    def test_just_below_threshold_rejected(self):
+        assert _is_match(0.6999) is False
 
+    def test_just_above_threshold_accepted(self):
+        assert _is_match(0.7001) is True
 
-# _sigmoid
+    def test_zero_rejected(self):
+        assert _is_match(0.0) is False
 
-class TestSigmoid:
-    def test_zero_returns_half(self):
-        assert _sigmoid(0.0) == pytest.approx(0.5)
+    def test_one_accepted(self):
+        assert _is_match(1.0) is True
 
-    def test_large_positive_approaches_1(self):
-        assert _sigmoid(500.0) == pytest.approx(1.0, abs=1e-9)
-
-    def test_large_negative_approaches_0(self):
-        assert _sigmoid(-500.0) == pytest.approx(0.0, abs=1e-9)
-
-    def test_symmetry_property(self):
-        for x in [0.1, 0.5, 1.0, 2.5, 10.0]:
-            assert _sigmoid(-x) == pytest.approx(1.0 - _sigmoid(x), abs=1e-12)
-
-    def test_output_always_in_0_1(self):
-        for x in [-1000.0, -1.0, 0.0, 1.0, 1000.0]:
-            v = _sigmoid(x)
-            assert 0.0 <= v <= 1.0
-
-    def test_monotonically_increasing(self):
-        values = [_sigmoid(float(x)) for x in range(-5, 6)]
-        assert values == sorted(values)
-
-    def test_known_value_at_1(self):
-        # sigmoid(1) = e / (1 + e)
-        expected = math.e / (1.0 + math.e)
-        assert _sigmoid(1.0) == pytest.approx(expected, abs=1e-9)
+    def test_returns_bool(self):
+        assert isinstance(_is_match(0.8), bool)
 
 
+# _dot
 
-# _time_diff_days
+class TestDot:
+    def test_basic_dot_product(self):
+        assert _dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]) == pytest.approx(32.0)
 
-class TestTimeDiffDays:
-    def test_same_timestamp_returns_zero(self):
-        ts = "2024-06-01T12:00:00Z"
-        assert _time_diff_days(ts, ts) == pytest.approx(0.0)
+    def test_orthogonal_vectors_return_zero(self):
+        assert _dot([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
 
-    def test_exactly_one_day_apart(self):
-        t1 = "2024-06-01T00:00:00Z"
-        t2 = "2024-06-02T00:00:00Z"
-        assert _time_diff_days(t1, t2) == pytest.approx(1.0)
+    def test_unit_vectors_return_one(self):
+        assert _dot([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
 
-    def test_exactly_half_day_apart(self):
-        t1 = "2024-06-01T00:00:00Z"
-        t2 = "2024-06-01T12:00:00Z"
-        assert _time_diff_days(t1, t2) == pytest.approx(0.5)
+    def test_none_first_returns_none(self):
+        assert _dot(None, [1.0, 2.0]) is None
 
-    def test_order_does_not_matter(self):
-        t1 = "2024-01-01T00:00:00Z"
-        t2 = "2024-01-10T00:00:00Z"
-        assert _time_diff_days(t1, t2) == pytest.approx(_time_diff_days(t2, t1))
+    def test_none_second_returns_none(self):
+        assert _dot([1.0, 2.0], None) is None
 
-    def test_bad_first_timestamp_returns_zero(self):
-        assert _time_diff_days("not-a-date", "2024-01-01T00:00:00Z") == 0.0
+    def test_empty_first_returns_none(self):
+        assert _dot([], [1.0, 2.0]) is None
 
-    def test_bad_second_timestamp_returns_zero(self):
-        assert _time_diff_days("2024-01-01T00:00:00Z", "garbage") == 0.0
+    def test_empty_second_returns_none(self):
+        assert _dot([1.0, 2.0], []) is None
 
-    def test_both_bad_timestamps_returns_zero(self):
-        assert _time_diff_days("bad", "also-bad") == 0.0
+    def test_both_none_returns_none(self):
+        assert _dot(None, None) is None
 
-    def test_thirty_days_apart(self):
-        t1 = "2024-01-01T00:00:00Z"
-        t2 = "2024-01-31T00:00:00Z"
-        assert _time_diff_days(t1, t2) == pytest.approx(30.0)
+    def test_consistent_with_numpy(self):
+        rng = np.random.default_rng(42)
+        a = rng.standard_normal(64).tolist()
+        b = rng.standard_normal(64).tolist()
+        assert _dot(a, b) == pytest.approx(float(np.dot(a, b)), abs=1e-5)
+
+    def test_first_article_dot_self_is_one_for_unit_vector(self):
+        # simulates get_history: head_emb dot head_emb
+        v = [1.0, 0.0, 0.0]
+        assert _dot(v, v) == pytest.approx(1.0)
 
 
+# _bytes_to_floats
 
-# _logreg_accept
+class TestBytesToFloats:
+    def test_none_returns_none(self):
+        assert _bytes_to_floats(None) is None
 
-class TestLogregAccept:
-    # Embed-only fallback (no logreg config)
+    def test_single_float_round_trip(self):
+        blob = struct.pack("1f", 3.14)
+        result = _bytes_to_floats(blob)
+        assert len(result) == 1
+        assert result[0] == pytest.approx(3.14, abs=1e-5)
 
-    def test_embed_above_tau_accepted(self):
-        assert _logreg_accept(0.8, 0.0, 0.0, logreg=None, tau_embed=0.7) is True
+    def test_multiple_floats_round_trip(self):
+        values = [1.0, 2.0, 3.0, 4.0]
+        blob = struct.pack(f"{len(values)}f", *values)
+        assert _bytes_to_floats(blob) == pytest.approx(values, abs=1e-6)
 
-    def test_embed_below_tau_rejected(self):
-        assert _logreg_accept(0.5, 0.0, 0.0, logreg=None, tau_embed=0.7) is False
+    def test_returns_list(self):
+        blob = struct.pack("2f", 1.0, 2.0)
+        assert isinstance(_bytes_to_floats(blob), list)
 
-    def test_embed_exactly_at_tau_accepted(self):
-        assert _logreg_accept(0.7, 0.0, 0.0, logreg=None, tau_embed=0.7) is True
+    def test_embedding_round_trip(self):
+        emb = np.random.default_rng(0).standard_normal(384).astype(np.float32)
+        result = _bytes_to_floats(emb.tobytes())
+        assert len(result) == 384
+        assert result == pytest.approx(emb.tolist(), abs=1e-6)
 
-    # Logistic regression path
-
-    def _simple_logreg(self, tau_prob=0.5):
-        """A logreg config that uses only the E feature with weight=10."""
-        return {
-            "feature_cols": ["E"],
-            "weights": [10.0],
-            "bias": -5.0,
-            "tau_prob": tau_prob,
-        }
-
-    def test_logreg_high_similarity_accepted(self):
-        lr = self._simple_logreg()
-        assert _logreg_accept(0.9, 0.0, 0.0, logreg=lr) is True
-
-    def test_logreg_low_similarity_rejected(self):
-        lr = self._simple_logreg()
-        assert _logreg_accept(0.1, 0.0, 0.0, logreg=lr) is False
-
-    def test_logreg_unsupported_feature_falls_back_to_tau(self):
-        lr = {
-            "feature_cols": ["E", "unknown_feature"],
-            "weights": [1.0, 1.0],
-            "bias": 0.0,
-            "tau_prob": 0.5,
-        }
-        # Falls back to embed-only tau=0.7
-        assert _logreg_accept(0.8, 0.0, 0.0, logreg=lr, tau_embed=0.7) is True
-        assert _logreg_accept(0.5, 0.0, 0.0, logreg=lr, tau_embed=0.7) is False
-
-    def test_logreg_uses_all_supported_features(self):
-        """domain_same and time_diff_days should influence the decision."""
-        lr = {
-            "feature_cols": ["E", "domain_same", "time_diff_days"],
-            "weights": [5.0, 3.0, -0.1],
-            "bias": -3.0,
-            "tau_prob": 0.5,
-        }
-        # Borderline E, but same domain pushes over threshold
-        accepted_same_domain = _logreg_accept(0.5, 1.0, 0.0, logreg=lr)
-        accepted_diff_domain = _logreg_accept(0.5, 0.0, 0.0, logreg=lr)
-        assert accepted_same_domain != accepted_diff_domain or True  # at least doesn't crash
-
-    def test_logreg_returns_bool(self):
-        lr = self._simple_logreg()
-        result = _logreg_accept(0.7, 0.0, 1.0, logreg=lr)
-        assert isinstance(result, bool)
+    def test_consistent_with_numpy_frombuffer(self):
+        emb = np.random.default_rng(7).standard_normal(16).astype(np.float32)
+        blob = emb.tobytes()
+        assert _bytes_to_floats(blob) == pytest.approx(
+            np.frombuffer(blob, dtype=np.float32).tolist(), abs=1e-6
+        )

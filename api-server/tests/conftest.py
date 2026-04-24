@@ -117,6 +117,8 @@ def isolated_storage(tmp_path, monkeypatch):
             domain      TEXT,
             timestamp   TEXT,
             embedding   BLOB,
+            simhash64   TEXT,      
+            title_tokens TEXT,    
             UNIQUE(user_id, url)
         )
     """)

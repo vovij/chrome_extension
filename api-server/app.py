@@ -30,9 +30,11 @@ from storage import (
 )
 from whats_new import _split_sentences, compute_whats_new
 
+from logreg_utils import tokenize_title, jaccard, simhash64_from_text, hamming64
 
-
-
+import json
+import math
+from datetime import datetime
 # app setup
 
 @asynccontextmanager
@@ -100,33 +102,6 @@ async def verify_email(token: str, user_manager=Depends(fastapi_users.get_user_m
         raise HTTPException(status_code=400, detail="Invalid or expired verification token")
 
 
-class ResendVerificationRequest(BaseModel):
-    email: str
-
-
-@app.post("/api/auth/resend-verification", tags=["auth"])
-async def resend_verification(
-    payload: ResendVerificationRequest,
-    request: Request,
-    user_manager=Depends(fastapi_users.get_user_manager),
-):
-    email = payload.email.strip().lower()
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
-    try:
-        user = await user_manager.get_by_email(email)
-    except Exception:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.is_verified:
-        return {"success": True, "message": "User is already verified"}
-    try:
-        await user_manager.request_verify(user, request)
-        return {"success": True, "message": "Verification email sent"}
-    except Exception as exc:
-        print(f"[auth] resend verification error: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to send verification email")
-
-
 @app.get("/verify-email", response_class=HTMLResponse)
 async def verify_email_page(token: str, user_manager=Depends(fastapi_users.get_user_manager)):
     try:
@@ -164,12 +139,20 @@ async def register(
 
 # similarity threshold
 
-TAU_EMBED = float(os.getenv("SEENIT_THRESHOLD", "0.7"))
+# Load SFT post-train config
+with open("./model_para/post_train_config.json", "r") as f:
+    POST_TRAIN_CFG = json.load(f)
 
+LOGREG_WEIGHTS = POST_TRAIN_CFG["post_train"]["logreg"]["weights"]
+LOGREG_BIAS = POST_TRAIN_CFG["post_train"]["logreg"]["bias"]
+TAU_PROB = POST_TRAIN_CFG["post_train"]["logreg"]["tau_prob"]
+TEXT_CLIP_CHARS = POST_TRAIN_CFG["text_clip_chars"]
 
-
-def _is_match(E: float) -> bool:
-    return E >= TAU_EMBED
+def _is_match(features: list) -> bool:
+    # features order: ["T", "Sh", "E", "time_diff_days"]
+    logit = sum(w * f for w, f in zip(LOGREG_WEIGHTS, features)) + LOGREG_BIAS
+    prob = 1.0 / (1.0 + math.exp(-logit))
+    return prob >= TAU_PROB
 
 
 # shared helpers
@@ -223,10 +206,16 @@ def _compute_novelty_details(
     return None
 
 
-async def _find_matches(user_id: str, emb, current_url: str) -> tuple:
-    titles, urls, domains, timestamps, embs = await asyncio.to_thread(load_all, user_id)
+async def _find_matches(user_id: str, emb, current_url: str, current_timestamp: str, current_sh: str, current_title_tokens: list) -> tuple:
+    # Unpack the 7 variables now returned by the updated load_all
+    titles, urls, domains, timestamps, embs, simhashes, tokens_list = await asyncio.to_thread(load_all, user_id)
     matches = []
     max_sim = None
+
+    try:
+        current_time = datetime.fromisoformat(current_timestamp) if current_timestamp else None
+    except Exception:
+        current_time = None
 
     if embs is not None:
         sims = embs @ emb
@@ -234,12 +223,42 @@ async def _find_matches(user_id: str, emb, current_url: str) -> tuple:
             max_sim = float(sims.max())
         except Exception:
             pass
-        print(f"[similarity] max: {max_sim:.4f}" if max_sim is not None else "[similarity] max: n/a")
-        for title, url, _, __, sim in zip(titles, urls, domains, timestamps, sims):
+            
+        for title, url, old_ts, sim, old_sh, old_tokens_str in zip(titles, urls, timestamps, sims, simhashes, tokens_list):
             if normalize_url(url) == normalize_url(current_url):
                 continue
+                
             E = float(sim)
-            if _is_match(E):
+            
+            # Reconstruct historic tokens from DB string
+            try:
+                old_title_tokens = json.loads(old_tokens_str) if old_tokens_str else []
+            except Exception:
+                old_title_tokens = []
+                
+            # Feature 1: T (Title Jaccard)
+            T = jaccard(current_title_tokens, old_title_tokens)
+            
+            # Feature 2: Sh (SimHash)
+            if old_sh and current_sh:
+                dH = hamming64(int(current_sh), int(old_sh))
+                Sh = 1.0 - (dH / 64.0)
+            else:
+                Sh = 0.0
+            
+            # Feature 3: time_diff_days
+            dt = -1
+            try:
+                if current_time and old_ts:
+                    old_time = datetime.fromisoformat(old_ts)
+                    dt = abs((current_time - old_time).days)
+            except Exception:
+                pass
+
+            # EXACT JSON ORDER: ["T", "Sh", "E", "time_diff_days"]
+            features = [round(T, 4), round(Sh, 4), E, dt]
+
+            if _is_match(features):
                 matches.append(SimilarArticle(title=title, url=url, similarity=E))
 
     matches.sort(key=lambda x: x.similarity, reverse=True)
@@ -286,16 +305,27 @@ async def _process_article(article: ArticleInput, user_id: str, include_novelty_
     article.url = normalize_url(article.url)
     existing = await asyncio.to_thread(get_article_by_url, article.url, user_id)
 
+    # Pre-calculate features for DB storage
+    title_tokens = tokenize_title(article.title or "")
+    title_tokens_str = json.dumps(title_tokens) # Store as JSON string in SQLite
+    
+    text_for_sh = f"{article.title or ''}\n\n{(article.content or '')[:TEXT_CLIP_CHARS]}"
+    simhash = str(simhash64_from_text(text_for_sh))
+
     if existing:
         emb = existing["embedding"]
     else:
         print(f"[embed] title: {article.title}")
-        print(f"[embed] content length: {len(article.content or '')}")
-        print(f"[embed] content preview: {(article.content or '')[:300]}")
         emb = engine.embed(article.title, article.content)
-        await asyncio.to_thread(save_article, article, emb, user_id, cluster_id=article.url, similarity=None)
+        # Update save_article to include hashes
+        await asyncio.to_thread(
+            save_article, article, emb, user_id, 
+            cluster_id=article.url, similarity=None, 
+            simhash64=simhash, title_tokens=title_tokens_str
+        )
 
-    matches, _ = await _find_matches(user_id, emb, article.url)
+    # Pass the calculated features to find_matches
+    matches, _ = await _find_matches(user_id, emb, article.url, article.timestamp, simhash, title_tokens)
     cluster_id = await _assign_cluster(user_id, article.url, matches)
     novelty, novelty_details = await _build_novelty(
         user_id=user_id, article=article, emb=emb,

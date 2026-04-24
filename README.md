@@ -1,53 +1,97 @@
-# SeenIt - Auto News Tracker
+# SeenIt
 
-Automatically track news articles you read. Minimal setup, 2 folders.
+**SeenIt** is a Chrome extension + FastAPI backend that detects when you're reading a news article you've already encountered in a different form — tracking story repetition across sources so you spend less time re-reading the same news.
 
-## Structure
+---
+
+## How it works
+
+When you visit a news article, the Chrome extension sends the page content to the backend. The backend:
+
+1. Extracts clean article text (via trafilatura, readability, or a fallback HTML parser)
+2. Embeds the title + body using a sentence-transformer model
+3. Compares the embedding against everything you've previously read (cosine similarity)
+4. If a match is found above the similarity threshold (`TAU_EMBED = 0.7`), a banner is shown in the browser
+5. Articles are grouped into clusters, and a **novelty score** is computed to tell you how much new information the current article adds
+
+---
+
+## Project structure
 
 ```
 seenit/
-├── extension/              # Chrome Extension (Frontend)
-│   ├── icons/             # Extension icons
-│   ├── manifest.json      # Extension config
-│   ├── popup.html         # UI
-│   ├── popup.js           # UI logic
-│   └── background.js      # Auto-tracking logic
-│
-└── backend/               # Backend with NLP logic (to be continued)
-    ├── ...          
-    ├── ...       
-    └── ...               
+├── api-server/               # FastAPI backend (Python / Poetry)
+│   ├── tests/                # pytest test suite
+│   ├── app.py                # Entry point — all API endpoints
+│   ├── auth.py               # JWT auth via fastapi-users
+│   ├── engine.py             # Sentence-transformer embedding
+│   ├── storage.py            # SQLite persistence, URL normalisation
+│   ├── models.py             # Pydantic request/response models
+│   ├── extract_content.py    # Article content extraction
+│   ├── cluster_utils.py      # Centroid + novelty computation
+│   ├── conftest.py           # pytest path setup
+│   ├── llm_summarizer.py     # LLM-based article summarisation
+│   ├── whats_new.py          # "What's new" diff across clusters
+├── experiments/              # Research & offline evals
+└── extension/                # Chrome extension (JS)
+    ├── icons/
+    ├── background.js         # Service worker — tab detection & API calls
+    ├── content.js            # Injected script — banner UI
+    ├── popup.html            # Extension popup page
+    ├── popup.js              # Popup logic — history & settings
+    └── manifest.json
 ```
 
-## Setup
+---
 
-### 1. Extension
+## Backend setup
 
-1. Open Chrome and go to `chrome://extensions/`
-2. Enable **"Developer mode"** (toggle in top right)
-3. Click **"Load unpacked"**
-4. Select the `extension/` folder
-5. Done! ✅
+### Prerequisites
 
-## How It Works
+- Python 3.10+
+- [Poetry](https://python-poetry.org/)
 
-1. Visit BBC, Reuters (2 sites for now as demo)
-2. Extension auto-tracks it in the background
-3. Data saved locally (Chrome storage)
-4. Click extension icon to see your history
+### Install dependencies
 
-## Tracked Sites
+```bash
+cd api-server
+poetry install
+```
 
-Currently tracking:
-- `bbc.co.uk`
-- `reuters.com`
+### Environment variables
 
-To add more: Edit `TRACKED_SITES` in `extension/background.js`
+Create a `.env` file in `api-server/` ans set variables as in .env.example to use locally
 
-### Data Storage
+To generate a secret key:
 
-**Frontend (Extension)**:
-- Uses Chrome's local storage API
-- Stores article URL, title, timestamp, and domain
-- Works offline - no backend required for basic tracking
-- Data persists across browser sessions
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+### Run the server locally
+
+```bash
+cd api-server
+poetry run uvicorn app:app --reload --port 8000
+```
+
+Interactive API docs are available at `http://localhost:8000/docs`.
+
+### Run tests
+
+```bash
+cd api-server
+poetry run pytest tests/ -v
+```
+
+---
+
+## Password requirements
+
+Passwords must be at least 8 characters and contain at least one uppercase letter and one digit.
+
+---
+
+## Deployment
+
+The backend is deployed at `https://seenit.doc.ic.ac.uk`

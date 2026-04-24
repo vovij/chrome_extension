@@ -64,17 +64,19 @@ CREATE TABLE IF NOT EXISTS articles (
     domain TEXT,
     timestamp TEXT,
     embedding BLOB,
+    simhash64 TEXT,
+    title_tokens TEXT,
     UNIQUE(user_id, url)
 )
 """)
 conn.commit()
 
 
-def save_article(article, embedding: np.ndarray, user_id: str, cluster_id: str = None, similarity: float = None):
+def save_article(article, embedding: np.ndarray, user_id: str, cluster_id: str = None, similarity: float = None, simhash64: str = None, title_tokens: str = None):
     cursor.execute("""
     INSERT INTO articles
-    (user_id, url, title, content, domain, timestamp, embedding, cluster_id, similarity)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (user_id, url, title, content, domain, timestamp, embedding, cluster_id, similarity, simhash64, title_tokens)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id, url) DO UPDATE SET
         title = excluded.title,
         content = excluded.content,
@@ -82,7 +84,9 @@ def save_article(article, embedding: np.ndarray, user_id: str, cluster_id: str =
         timestamp = excluded.timestamp,
         embedding = excluded.embedding,
         cluster_id = COALESCE(excluded.cluster_id, articles.cluster_id),
-        similarity = COALESCE(excluded.similarity, articles.similarity)
+        similarity = COALESCE(excluded.similarity, articles.similarity),
+        simhash64 = COALESCE(excluded.simhash64, articles.simhash64),
+        title_tokens = COALESCE(excluded.title_tokens, articles.title_tokens)
     """, (
         user_id,
         normalize_url(article.url),
@@ -93,6 +97,8 @@ def save_article(article, embedding: np.ndarray, user_id: str, cluster_id: str =
         embedding.tobytes(),
         normalize_url(cluster_id) if cluster_id else None,
         similarity,
+        simhash64,
+        title_tokens,
     ))
     conn.commit()
 
@@ -223,23 +229,24 @@ def get_content_by_urls(user_id: str, urls: list) -> dict:
 
 def load_all(user_id: str):
     cursor.execute(
-        "SELECT title, url, domain, timestamp, embedding FROM articles WHERE user_id = ?",
+        "SELECT title, url, domain, timestamp, embedding, simhash64, title_tokens FROM articles WHERE user_id = ?",
         (user_id,),
     )
     rows = cursor.fetchall()
 
-    titles, urls, domains, timestamps, embs = [], [], [], [], []
-    for t, u, d, ts, e in rows:
+    titles, urls, domains, timestamps, embs, simhashes, tokens_list = [], [], [], [], [], [], []
+    for t, u, d, ts, e, sh, tok in rows:
         titles.append(t)
         urls.append(u)
         domains.append(d or "")
         timestamps.append(ts or "")
         embs.append(np.frombuffer(e, dtype=np.float32))
+        simhashes.append(sh or "")
+        tokens_list.append(tok or "[]")
 
     if not embs:
-        return [], [], [], [], None
-    return titles, urls, domains, timestamps, np.vstack(embs)
-
+        return [], [], [], [], None, [], []
+    return titles, urls, domains, timestamps, np.vstack(embs), simhashes, tokens_list
 
 def get_embeddings_by_urls(user_id: str, urls: List[str]) -> List[np.ndarray]:
     if not urls:
