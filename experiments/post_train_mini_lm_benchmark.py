@@ -13,9 +13,8 @@ from sklearn.metrics import precision_recall_fscore_support, roc_auc_score
 from sentence_transformers import SentenceTransformer
 import torch
 
-# =========================
+
 # Models to compare
-# =========================
 MODEL_LIST = [
     "sentence-transformers/all-MiniLM-L6-v2",
     "sentence-transformers/all-MiniLM-L12-v2",
@@ -24,9 +23,8 @@ MODEL_LIST = [
     "BAAI/bge-base-en-v1.5",
 ]
 
-# =========================
-# Configurable Parameters
-# =========================
+
+# Configurable parameters
 CONFIG = {
     "articles_train": "out_wcep_posttrain/articles.train.jsonl",
     "articles_val":   "out_wcep_posttrain/articles.val.jsonl",
@@ -44,10 +42,8 @@ CONFIG = {
     "target_precision": 0.95,
 }
 
-# =========================
-# Utilities
-# =========================
 
+# Utilities
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -65,10 +61,7 @@ def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b))
 
 
-# =========================
-# Model-specific formatting
-# =========================
-
+# Model-specific formatting for E5 and BGE
 def format_text_for_model(model_name: str, text: str) -> str:
     if "intfloat/e5" in model_name:
         return "passage: " + text
@@ -77,10 +70,7 @@ def format_text_for_model(model_name: str, text: str) -> str:
     return text
 
 
-# =========================
-# Model and Embeddings
-# =========================
-
+# Model and embeddings
 def load_model(model_name: str):
     device = CONFIG["device"] or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[model] loading {model_name} on {device}")
@@ -97,10 +87,7 @@ def batch_encode_texts(model, texts):
     ).astype(np.float32)
 
 
-# =========================
-# Data Loading
-# =========================
-
+# Data loading
 def load_articles(path: str) -> Dict[str, dict]:
     return {r["id"]: r for r in read_jsonl(path)}
 
@@ -109,10 +96,7 @@ def load_pairs(path: str) -> pd.DataFrame:
     return pd.DataFrame(list(read_jsonl(path)))
 
 
-# =========================
-# Embedding + Similarity
-# =========================
-
+# Embedding and similarity
 def build_id_embeddings(articles, model, model_name):
     ids, texts = [], []
 
@@ -141,10 +125,7 @@ def fill_pairs_with_E(df_pairs, id2emb):
     return df
 
 
-# =========================
 # Evaluation helpers
-# =========================
-
 def pick_threshold_for_precision(y_true, scores, target_precision):
     cand = np.linspace(0, 1, 1001)
     best = {"tau": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0}
@@ -160,10 +141,7 @@ def pick_threshold_for_precision(y_true, scores, target_precision):
     return best
 
 
-# =========================
 # Run one model
-# =========================
-
 def run_model(model_name):
     set_seed(CONFIG["seed"])
     model = load_model(model_name)
@@ -210,10 +188,7 @@ def run_model(model_name):
     }
 
 
-# =========================
 # Main benchmark loop
-# =========================
-
 def main():
     Path(CONFIG["outdir"]).mkdir(exist_ok=True)
     rows = []

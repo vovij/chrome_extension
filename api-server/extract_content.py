@@ -55,7 +55,7 @@ class SimpleHTMLParser(HTMLParser):
         return text[:max_length].strip()
 
 
-def extract_with_readability(html_content: str, url: str) -> Optional[Dict[str, str]]:
+def extract_with_readability(html_content: str, url: str):
     """Extract content using readability-lxml library"""
     if not READABILITY_AVAILABLE:
         return None
@@ -81,7 +81,7 @@ def extract_with_readability(html_content: str, url: str) -> Optional[Dict[str, 
     return None
 
 
-def extract_with_trafilatura(html_content: str, url: str) -> Optional[Dict[str, str]]:
+def extract_with_trafilatura(html_content: str, url: str):
     """Extract content using trafilatura library"""
     if not TRAFILATURA_AVAILABLE:
         return None
@@ -107,7 +107,7 @@ def extract_with_trafilatura(html_content: str, url: str) -> Optional[Dict[str, 
 
     return None
 
-def extract_with_simple_parser(html_content: str, url: str) -> Dict[str, str]:
+def extract_with_simple_parser(html_content: str, url: str):
     """Fallback: Simple HTML parsing"""
 
     # Try to restrict to <article> or <main> blocks first (reduces sidebars a lot)
@@ -139,19 +139,8 @@ def extract_with_simple_parser(html_content: str, url: str) -> Dict[str, str]:
     }
 
 
-def extract_article_content(url: str, html_content: Optional[str] = None, 
-                            timeout: int = 10) -> Dict[str, str]:
-    """
-    Extract article content from a URL
-    
-    Args:
-        url: URL of the article
-        html_content: Optional pre-fetched HTML content
-        timeout: Request timeout in seconds
-    
-    Returns:
-        Dictionary with 'title', 'text', 'url', 'domain', 'timestamp'
-    """
+def extract_article_content(url: str, html_content: Optional[str] = None, timeout: int = 10):
+    """Extract article content from a URL"""
     result = {
         'title': '',
         'text': '',
@@ -197,7 +186,7 @@ def extract_article_content(url: str, html_content: Optional[str] = None,
     return result
 
 
-def extract_from_html_file(file_path: str, url: str = '') -> Dict[str, str]:
+def extract_from_html_file(file_path: str, url: str = ''):
     """Extract content from a local HTML file"""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:

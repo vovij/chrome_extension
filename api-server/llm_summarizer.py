@@ -12,10 +12,7 @@ _model = None
 
 
 def _load_model():
-    """
-    Lazy-load FLAN-T5 model and tokenizer.
-    Runs locally, no API key required.
-    """
+    """Lazy-load FLAN-T5 model and tokenizer."""
     global _tokenizer, _model
 
     if _tokenizer is None or _model is None:
@@ -29,12 +26,11 @@ def _load_model():
     return _tokenizer, _model
 
 
-def summarize_whats_new(sentences: List[str]) -> Optional[str]:
-    """
-    Use FLAN-T5 to turn the most informative 'new' sentences
-    into a short, readable paragraph.
-    """
+def summarize_whats_new(sentences: List[str]):
+    """Use FLAN-T5 to turn the most informative 'new' sentences into a short, readable paragraph."""
+    
     print(f"[SeenIt] summarize_whats_new called with {len(sentences)} sentences")
+    
     # Join sentences into a single short context
     text_parts = [s.strip() for s in sentences if s and s.strip()]
     if not text_parts:

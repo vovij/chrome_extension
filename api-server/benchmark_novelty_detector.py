@@ -38,10 +38,11 @@ URL2_CANDIDATES = ("url2", "link2", "article2_url", "right_url", "target_url")
 LABEL_CANDIDATES = ("label", "similar", "is_similar", "same_topic", "resemble")
 
 
-def _normalize_label(value) -> Optional[int]:
+def _normalize_label(value):
     if pd.isna(value):
         return None
 
+    # Convert numeric/boolean types: non-zero or >= 0.5 is considered "Similar" (1)
     if isinstance(value, (int, np.integer)):
         return int(value != 0)
     if isinstance(value, (float, np.floating)):
@@ -58,17 +59,14 @@ def _normalize_label(value) -> Optional[int]:
     return None
 
 
-def _pick_column(
-    df: pd.DataFrame,
-    explicit: Optional[str],
-    candidates: Iterable[str],
-    name_for_errors: str,
-) -> str:
+def _pick_column(df: pd.DataFrame, explicit: Optional[str], candidates: Iterable[str], name_for_errors: str,):
+    # Use user-provided column name if available
     if explicit:
         if explicit not in df.columns:
             raise ValueError(f"Column '{explicit}' was not found for {name_for_errors}.")
         return explicit
 
+    # Fallback: Fuzzy match against a list of common naming conventions (e.g., 'url1', 'link1')
     lowered = {c.lower(): c for c in df.columns}
     for cand in candidates:
         if cand.lower() in lowered:
@@ -81,13 +79,13 @@ def _pick_column(
     )
 
 
-def _safe_text(title: str, content: str) -> Tuple[str, str]:
+    def _safe_text(title: str, content: str):
     title = (title or "").strip()
     content = (content or "").strip()
     return title, content
 
 
-def _embed_url(url: str, engine: EmbeddingEngine) -> Dict:
+def _embed_url(url: str, engine: EmbeddingEngine):
     extracted = extract_article_content(url)
     title, text = _safe_text(extracted.get("title", ""), extracted.get("text", ""))
 
@@ -112,14 +110,7 @@ def _embed_url(url: str, engine: EmbeddingEngine) -> Dict:
     }
 
 
-def run_benchmark(
-    input_csv: Path,
-    output_dir: Path,
-    similarity_threshold: float,
-    url1_col: Optional[str],
-    url2_col: Optional[str],
-    label_col: Optional[str],
-) -> Dict:
+def run_benchmark(input_csv: Path,output_dir: Path,similarity_threshold: float, url1_col: Optional[str], url2_col: Optional[str], label_col: Optional[str]):
     df = pd.read_csv(input_csv)
     if df.empty:
         raise ValueError("Input CSV is empty.")
@@ -128,6 +119,7 @@ def run_benchmark(
     c_url2 = _pick_column(df, url2_col, URL2_CANDIDATES, "url2")
     c_label = _pick_column(df, label_col, LABEL_CANDIDATES, "label")
 
+    # Data Preparation: Select relevant columns, normalize labels, and drop invalid rows
     work = df[[c_url1, c_url2, c_label]].copy()
     work.columns = ["url1", "url2", "label_raw"]
     work["label"] = work["label_raw"].apply(_normalize_label)
@@ -158,6 +150,7 @@ def run_benchmark(
 
         if left["ok"] and right["ok"]:
             sim = float(engine.cosine(left["embedding"], right["embedding"]))
+            # Novelty is the inverse of similarity (clamped between 0 and 1)
             novelty = float(max(0.0, min(1.0, 1.0 - sim)))
             y_pred = int(sim >= similarity_threshold)
             pair_ok = True
@@ -196,13 +189,15 @@ def run_benchmark(
     y_true = valid["label"].to_numpy()
     y_pred = valid["prediction"].to_numpy()
     y_score = valid["similarity"].to_numpy()
-
+    
+    # Calculate binary classification metrics (Precision, Recall, F1)
     precision, recall, f1, _ = precision_recall_fscore_support(
         y_true, y_pred, average="binary", zero_division=0
     )
     acc = accuracy_score(y_true, y_pred)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-
+    
+    # Calculate AUC only if both positive and negative samples are present
     auc = None
     if len(np.unique(y_true)) > 1:
         auc = float(roc_auc_score(y_true, y_score))
@@ -236,7 +231,7 @@ def run_benchmark(
     return metrics
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser():
     parser = argparse.ArgumentParser(description="Benchmark SeenIt novelty detector on URL pairs CSV.")
     parser.add_argument("--input-csv", required=True, type=Path, help="Path to CSV file with URL pairs.")
     parser.add_argument("--output-dir", type=Path, default=Path("./out_novelty_benchmark"))
@@ -252,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main():
     args = build_parser().parse_args()
     metrics = run_benchmark(
         input_csv=args.input_csv,
